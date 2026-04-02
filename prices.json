@@ -1,0 +1,32 @@
+{
+  "updated_at": "pendiente primera actualización automática",
+  "hits": 0,
+  "total": 25,
+  "prices": {
+    "XAU":  4489.69,
+    "VIST": 74.21,
+    "NVDA": 167.52,
+    "AXP":  292.97,
+    "VALE": 15.03,
+    "AMD":  201.99,
+    "PLTR": 143.06,
+    "CEG":  301.49,
+    "BMA":  69.26,
+    "PAM":  83.92,
+    "GGAL": 42.70,
+    "MSFT": 356.77,
+    "IBIT": 37.40,
+    "MOO":  82.65,
+    "LMND": 60.70,
+    "GPRK": 9.62,
+    "NBIS": 100.82,
+    "BABA": 122.69,
+    "MSTR": 126.03,
+    "PCLA": 2.00,
+    "OSCR": 11.14,
+    "TSLA": 361.83,
+    "NNE":  20.29,
+    "UNH":  259.02,
+    "GEMI": 4.11
+  }
+}
