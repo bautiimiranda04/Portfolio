@@ -12,8 +12,6 @@ on:
 jobs:
   update-prices:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout repository
@@ -24,16 +22,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Fetch prices from Yahoo Finance + save to Supabase
+      - name: Fetch prices + save to Supabase + check alerts
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAILS: ${{ secrets.ALERT_EMAILS }}
         run: python update_prices.py
-
-      - name: Commit and push prices.json
-        run: |
-          git config user.name "Portfolio Bot"
-          git config user.email "bot@portfolio"
-          git add prices.json
-          git diff --staged --quiet || git commit -m "Actualizar precios $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git push
