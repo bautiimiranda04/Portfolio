@@ -12,50 +12,31 @@ import os
 import urllib.request
 import urllib.error
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 SUPABASE_URL         = os.environ.get('SUPABASE_URL', '')
 SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
 RESEND_API_KEY       = os.environ.get('RESEND_API_KEY', '')
 ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').split(',') if e.strip()]
 
-# Tickers in the portfolio (prices saved to price_history daily)
-TICKER_MAP = {
-    'XAU':  'GC=F',
-    'VIST': 'VIST',
-    'NVDA': 'NVDA',
-    'AXP':  'AXP',
-    'VALE': 'VALE',
-    'AMD':  'AMD',
-    'PLTR': 'PLTR',
-    'CEG':  'CEG',
-    'BMA':  'BMA',
-    'PAM':  'PAM',
-    'GGAL': 'GGAL',
-    'MSFT': 'MSFT',
-    'IBIT': 'IBIT',
-    'MOO':  'MOO',
-    'LMND': 'LMND',
-    'GPRK': 'GPRK',
-    'NBIS': 'NBIS',
-    'BABA': 'BABA',
-    'MSTR': 'MSTR',
-    'PCLA': 'PCLA',
-    'OSCR': 'OSCR',
-    'TSLA': 'TSLA',
-    'NNE':  'NNE',
-    'UNH':  'UNH',
-    'GEMI': 'GEMI',
-    # Watchlist tickers also tracked in price_history for charts
-    'MELI': 'MELI',
-    'GLOB': 'GLOB',
-    'TSM':  'TSM',
+# Override Yahoo Finance symbol for tickers where the symbol differs
+SYMBOL_OVERRIDE = {
+    'XAU': 'GC=F',   # Gold futures
 }
 
-# Watchlist tickers that get extended data (P/E, market cap, 52w) in watchlist_meta
-WATCHLIST_TICKERS = ['MELI', 'GLOB', 'TSM', 'BABA']
+# Fallback ticker list used when Supabase is unavailable
+TICKER_MAP_FALLBACK = {
+    'XAU':  'GC=F',  'VIST': 'VIST',  'NVDA': 'NVDA',  'AXP':  'AXP',
+    'VALE': 'VALE',   'AMD':  'AMD',   'PLTR': 'PLTR',  'CEG':  'CEG',
+    'BMA':  'BMA',    'PAM':  'PAM',   'GGAL': 'GGAL',  'MSFT': 'MSFT',
+    'IBIT': 'IBIT',   'MOO':  'MOO',   'LMND': 'LMND',  'GPRK': 'GPRK',
+    'NBIS': 'NBIS',   'BABA': 'BABA',  'MSTR': 'MSTR',  'PCLA': 'PCLA',
+    'OSCR': 'OSCR',   'TSLA': 'TSLA',  'NNE':  'NNE',   'UNH':  'UNH',
+    'GEMI': 'GEMI',   'MELI': 'MELI',  'GLOB': 'GLOB',  'TSM':  'TSM',
+}
+WATCHLIST_TICKERS_FALLBACK = ['MELI', 'GLOB', 'TSM', 'BABA']
 
-FALLBACK = {
+PRICE_FALLBACK = {
     'XAU':  4489.69, 'VIST': 74.21,  'NVDA': 167.52, 'AXP':  292.97,
     'VALE': 15.03,   'AMD':  201.99,  'PLTR': 143.06,  'CEG':  301.49,
     'BMA':  69.26,   'PAM':  83.92,   'GGAL': 42.70,   'MSFT': 356.77,
@@ -117,6 +98,20 @@ def supabase_patch(path, data):
             pass
     except Exception as e:
         print(f"  ✗ Error en PATCH {path}: {e}")
+
+def fetch_portfolio_tickers():
+    """Fetch distinct tickers from Supabase positions table."""
+    rows = supabase_get('positions?select=ticker')
+    if not rows:
+        return []
+    return list(dict.fromkeys(r['ticker'] for r in rows if r.get('ticker')))
+
+def fetch_watchlist_tickers():
+    """Fetch distinct tickers from Supabase watchlist table."""
+    rows = supabase_get('watchlist?select=ticker')
+    if not rows:
+        return []
+    return list(dict.fromkeys(r['ticker'] for r in rows if r.get('ticker')))
 
 def save_to_supabase(prices, today):
     """Upsert today's prices into price_history table."""
@@ -337,32 +332,53 @@ def save_watchlist_meta(rows):
 def main():
     prices = {}
     hits   = 0
-    now_utc = datetime.now(timezone.utc)
-    now_str = now_utc.strftime('%Y-%m-%d %H:%M UTC')
-    today   = now_utc.strftime('%Y-%m-%d')
 
-    print(f"Actualizando precios — {now_str}")
+    # Use Argentina time (UTC-3) for the date — avoids off-by-one at midnight
+    now_utc = datetime.now(timezone.utc)
+    now_arg = now_utc - timedelta(hours=3)
+    now_str = now_utc.strftime('%Y-%m-%d %H:%M UTC')
+    today   = now_arg.strftime('%Y-%m-%d')   # Argentina local date
+
+    print(f"Actualizando precios — {now_str}  (fecha AR: {today})")
     print("-" * 42)
 
-    for ticker, yahoo_sym in TICKER_MAP.items():
+    # Build ticker map dynamically from Supabase
+    portfolio_tickers = fetch_portfolio_tickers()
+    watchlist_tickers = fetch_watchlist_tickers()
+
+    if portfolio_tickers:
+        # Combine portfolio + watchlist, deduplicated, apply symbol overrides
+        all_tickers = list(dict.fromkeys(portfolio_tickers + watchlist_tickers))
+        ticker_map  = {t: SYMBOL_OVERRIDE.get(t, t) for t in all_tickers}
+        watchlist_extended = watchlist_tickers if watchlist_tickers else WATCHLIST_TICKERS_FALLBACK
+        print(f"  ✓ Tickers dinámicos: {len(portfolio_tickers)} portfolio + {len(watchlist_tickers)} watchlist")
+    else:
+        print("  ⚠ No se encontraron tickers en Supabase — usando lista de respaldo")
+        ticker_map  = dict(TICKER_MAP_FALLBACK)
+        watchlist_extended = list(WATCHLIST_TICKERS_FALLBACK)
+
+    print(f"  → {len(ticker_map)} tickers a actualizar")
+    print("-" * 42)
+
+    for ticker, yahoo_sym in ticker_map.items():
         price = fetch_price(yahoo_sym)
         if price:
             prices[ticker] = price
             hits += 1
             print(f"  {ticker:6} = ${price}")
         else:
-            prices[ticker] = FALLBACK.get(ticker)
-            print(f"  {ticker:6} = ${FALLBACK.get(ticker)} (fallback)")
+            prices[ticker] = PRICE_FALLBACK.get(ticker)
+            print(f"  {ticker:6} = ${PRICE_FALLBACK.get(ticker)} (fallback)")
         time.sleep(0.3)
 
     print("-" * 42)
-    print(f"Yahoo: {hits}/{len(TICKER_MAP)} precios obtenidos en vivo")
+    print(f"Yahoo: {hits}/{len(ticker_map)} precios obtenidos en vivo")
 
     # 1. Write prices.json (legacy fallback)
     output = {
         'updated_at': now_str,
         'hits': hits,
-        'total': len(TICKER_MAP),
+        'total': len(ticker_map),
         'prices': prices,
     }
     with open('prices.json', 'w') as f:
@@ -374,9 +390,9 @@ def main():
 
     # 3. Fetch extended data for watchlist tickers
     print("-" * 42)
-    print("Actualizando watchlist (P/E, market cap, 52w)...")
+    print(f"Actualizando watchlist_meta ({len(watchlist_extended)} tickers)...")
     wl_rows = []
-    for ticker in WATCHLIST_TICKERS:
+    for ticker in watchlist_extended:
         time.sleep(0.4)
         row = fetch_watchlist_extended(ticker)
         if row:
