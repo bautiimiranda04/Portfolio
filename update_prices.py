@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 SUPABASE_URL         = os.environ.get('SUPABASE_URL', '')
 SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
 RESEND_API_KEY       = os.environ.get('RESEND_API_KEY', '')
-ALERT_EMAIL          = os.environ.get('ALERT_EMAIL', '')
+ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').split(',') if e.strip()]
 
 TICKER_MAP = {
     'XAU':  'GC=F',
@@ -187,8 +187,8 @@ def mark_triggered(alerts):
 
 def send_email(triggered_alerts, now_str):
     """Send email notification via Resend."""
-    if not RESEND_API_KEY or not ALERT_EMAIL:
-        print("  ⚠ RESEND_API_KEY / ALERT_EMAIL no configurados — no se envía email")
+    if not RESEND_API_KEY or not ALERT_EMAILS:
+        print("  ⚠ RESEND_API_KEY / ALERT_EMAILS no configurados — no se envía email")
         return
     if not triggered_alerts:
         return
@@ -241,7 +241,7 @@ def send_email(triggered_alerts, now_str):
 
     payload = json.dumps({
         'from': 'Portfolio Familiar <onboarding@resend.dev>',
-        'to': [ALERT_EMAIL],
+        'to': ALERT_EMAILS,
         'subject': subject,
         'html': html_body,
     }).encode()
@@ -257,7 +257,7 @@ def send_email(triggered_alerts, now_str):
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            print(f"  ✓ Email enviado a {ALERT_EMAIL}")
+            print(f"  ✓ Email enviado a {', '.join(ALERT_EMAILS)}")
     except urllib.error.HTTPError as e:
         print(f"  ✗ Error enviando email: {e.code} — {e.read().decode()}")
     except Exception as e:
