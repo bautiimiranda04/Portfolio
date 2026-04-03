@@ -3,7 +3,8 @@
 Fetches live prices from Yahoo Finance and:
 1. Writes prices.json (fallback)
 2. Upserts into Supabase price_history table (one row per ticker per day)
-3. Checks active alerts and sends email via Resend if any triggered
+3. Fetches extended data (P/E, market cap, 52-week) for watchlist tickers
+4. Checks active alerts and sends email via Resend if any triggered
 Runs automatically 2x per day via GitHub Actions.
 """
 import json
@@ -18,6 +19,7 @@ SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
 RESEND_API_KEY       = os.environ.get('RESEND_API_KEY', '')
 ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').split(',') if e.strip()]
 
+# Tickers in the portfolio (prices saved to price_history daily)
 TICKER_MAP = {
     'XAU':  'GC=F',
     'VIST': 'VIST',
@@ -44,7 +46,14 @@ TICKER_MAP = {
     'NNE':  'NNE',
     'UNH':  'UNH',
     'GEMI': 'GEMI',
+    # Watchlist tickers also tracked in price_history for charts
+    'MELI': 'MELI',
+    'GLOB': 'GLOB',
+    'TSM':  'TSM',
 }
+
+# Watchlist tickers that get extended data (P/E, market cap, 52w) in watchlist_meta
+WATCHLIST_TICKERS = ['MELI', 'GLOB', 'TSM', 'BABA']
 
 FALLBACK = {
     'XAU':  4489.69, 'VIST': 74.21,  'NVDA': 167.52, 'AXP':  292.97,
@@ -263,6 +272,68 @@ def send_email(triggered_alerts, now_str):
     except Exception as e:
         print(f"  ✗ Error enviando email: {e}")
 
+def fetch_watchlist_extended(ticker):
+    """Fetch price history + P/E + market cap for a watchlist ticker."""
+    yf_headers = {'User-Agent': 'Mozilla/5.0 (compatible; portfolio-updater/1.0)', 'Accept': 'application/json'}
+    result = {'ticker': ticker, 'price': None, 'prev_close': None, 'week_ago_price': None,
+              'hi52': None, 'lo52': None, 'pe_ratio': None, 'market_cap': None}
+    try:
+        # 1-year daily history for price, hi52, lo52, weekAgo
+        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1y'
+        req = urllib.request.Request(url, headers=yf_headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            res  = data['chart']['result'][0]
+            meta = res['meta']
+            closes = res['indicators']['quote'][0].get('close', [])
+            valid  = [c for c in closes if c is not None]
+            if not valid:
+                return None
+            result['price']          = round(meta.get('regularMarketPrice') or valid[-1], 4)
+            result['prev_close']     = round(valid[-2], 4) if len(valid) >= 2 else result['price']
+            result['week_ago_price'] = round(valid[-6], 4) if len(valid) >= 6 else None
+            result['hi52']           = round(max(valid), 4)
+            result['lo52']           = round(min(valid), 4)
+    except Exception as e:
+        print(f'  ✗ Watchlist chart error {ticker}: {e}')
+        return None
+    try:
+        # P/E ratio and market cap from quoteSummary
+        url2 = f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=summaryDetail'
+        req2 = urllib.request.Request(url2, headers=yf_headers)
+        with urllib.request.urlopen(req2, timeout=10) as resp:
+            d2  = json.loads(resp.read().decode())
+            sd  = d2['quoteSummary']['result'][0]['summaryDetail']
+            pe  = sd.get('trailingPE',  {}).get('raw')
+            mc  = sd.get('marketCap',   {}).get('raw')
+            if pe: result['pe_ratio']   = round(float(pe), 2)
+            if mc: result['market_cap'] = int(mc)
+    except Exception as e:
+        print(f'  ⚠ Watchlist PE/MC unavailable {ticker}: {e}')
+    return result
+
+def save_watchlist_meta(rows):
+    """Upsert extended watchlist data into watchlist_meta table."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY or not rows:
+        return
+    import datetime as _dt
+    for r in rows:
+        r['updated_at'] = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    url = f'{SUPABASE_URL}/rest/v1/watchlist_meta'
+    data = json.dumps(rows).encode('utf-8')
+    headers = {
+        'apikey': SUPABASE_SERVICE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates',
+    }
+    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print(f'  ✓ watchlist_meta: {len(rows)} tickers actualizados')
+    except Exception as e:
+        print(f'  ✗ Error guardando watchlist_meta: {e}')
+
 def main():
     prices = {}
     hits   = 0
@@ -301,7 +372,21 @@ def main():
     # 2. Upsert into Supabase price_history
     save_to_supabase(prices, today)
 
-    # 3. Check alerts and notify by email
+    # 3. Fetch extended data for watchlist tickers
+    print("-" * 42)
+    print("Actualizando watchlist (P/E, market cap, 52w)...")
+    wl_rows = []
+    for ticker in WATCHLIST_TICKERS:
+        time.sleep(0.4)
+        row = fetch_watchlist_extended(ticker)
+        if row:
+            wl_rows.append(row)
+            print(f'  {ticker:6} = ${row["price"]} | P/E: {row["pe_ratio"] or "N/A"} | Cap: {int(row["market_cap"]/1e9) if row["market_cap"] else "N/A"}B')
+        else:
+            print(f'  {ticker:6} = error')
+    save_watchlist_meta(wl_rows)
+
+    # 4. Check alerts and notify by email
     print("-" * 42)
     print("Revisando alertas...")
     triggered = check_alerts(prices)
