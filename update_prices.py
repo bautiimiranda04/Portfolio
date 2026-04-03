@@ -138,6 +138,52 @@ def save_to_supabase(prices, today):
     except Exception as e:
         print(f"  ✗ Error guardando en Supabase: {e}")
 
+def fetch_tickers_with_history():
+    """Return set of tickers that already have at least one row in price_history."""
+    rows = supabase_get('price_history?select=ticker')
+    if not rows:
+        return set()
+    return set(r['ticker'] for r in rows if r.get('ticker'))
+
+def backfill_ticker(ticker, yahoo_symbol):
+    """Fetch last 10 days of closing prices from Yahoo and upsert into price_history."""
+    url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range=15d'
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (compatible; portfolio-updater/1.0)',
+        'Accept': 'application/json',
+    }
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+            result = data['chart']['result'][0]
+            timestamps = result.get('timestamp', [])
+            closes = result['indicators']['quote'][0].get('close', [])
+            rows = []
+            for ts, close in zip(timestamps, closes):
+                if close is None:
+                    continue
+                date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+                rows.append({'ticker': ticker, 'date': date_str, 'price': round(close, 4)})
+            if not rows:
+                print(f'  ✗ Backfill {ticker}: sin datos')
+                return
+            if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+                return
+            ph_url = f'{SUPABASE_URL}/rest/v1/price_history'
+            ph_data = json.dumps(rows).encode('utf-8')
+            ph_headers = {
+                'apikey': SUPABASE_SERVICE_KEY,
+                'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates',
+            }
+            ph_req = urllib.request.Request(ph_url, data=ph_data, headers=ph_headers, method='POST')
+            with urllib.request.urlopen(ph_req, timeout=15) as r:
+                print(f'  ✓ Backfill {ticker}: {len(rows)} días cargados')
+    except Exception as e:
+        print(f'  ✗ Backfill {ticker}: {e}')
+
 def check_alerts(prices):
     """
     Compare active alerts against current prices.
@@ -387,6 +433,20 @@ def main():
 
     # 2. Upsert into Supabase price_history
     save_to_supabase(prices, today)
+
+    # 2b. Backfill historical data for new portfolio tickers
+    print("-" * 42)
+    print("Verificando tickers nuevos que necesiten backfill...")
+    existing_tickers = fetch_tickers_with_history()
+    new_tickers = [t for t in portfolio_tickers if t not in existing_tickers]
+    if new_tickers:
+        print(f"  Tickers nuevos detectados: {', '.join(new_tickers)}")
+        for t in new_tickers:
+            ys = ticker_map.get(t, t)
+            time.sleep(0.5)
+            backfill_ticker(t, ys)
+    else:
+        print("  ✓ Sin tickers nuevos, backfill no necesario")
 
     # 3. Fetch extended data for watchlist tickers
     print("-" * 42)
