@@ -2,8 +2,11 @@ name: Actualizar precios
 
 on:
   schedule:
+    # 9:00 AM Argentina time (UTC-3) = 12:00 UTC
     - cron: '0 12 * * 1-5'
+    # 6:00 PM Argentina time (UTC-3) = 21:00 UTC
     - cron: '0 21 * * 1-5'
+  # Allow manual trigger from GitHub website
   workflow_dispatch:
 
 jobs:
@@ -21,7 +24,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Fetch prices from Yahoo Finance
+      - name: Fetch prices from Yahoo Finance + save to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: python update_prices.py
 
       - name: Commit and push prices.json
