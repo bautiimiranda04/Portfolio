@@ -2,10 +2,10 @@ name: Actualizar precios
 
 on:
   schedule:
-    # 9:00 AM Argentina time (UTC-3) = 12:00 UTC
-    - cron: '0 12 * * 1-5'
-    # 6:00 PM Argentina time (UTC-3) = 21:00 UTC
-    - cron: '0 21 * * 1-5'
+    # 9:00 AM Argentina time (UTC-3) = 12:00 UTC — todos los días
+    - cron: '0 12 * * *'
+    # 6:00 PM Argentina time (UTC-3) = 21:00 UTC — todos los días
+    - cron: '0 21 * * *'
   # Allow manual trigger from GitHub website
   workflow_dispatch:
 
