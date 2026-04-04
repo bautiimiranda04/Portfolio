@@ -5,7 +5,8 @@ Fetches live prices from Yahoo Finance and:
 2. Upserts into Supabase price_history table (one row per ticker per day)
 3. Fetches extended data (P/E, market cap, 52-week) for watchlist tickers
 4. Checks active alerts and sends email via Resend if any triggered
-Runs automatically 2x per day via GitHub Actions.
+Runs automatically 2x per day via GitHub Actions (every day of the week).
+On weekends, only 24/7 assets (gold, crypto) are updated.
 """
 import json
 import os
@@ -22,6 +23,22 @@ ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').sp
 # Override Yahoo Finance symbol for tickers where the symbol differs
 SYMBOL_OVERRIDE = {
     'XAU': 'GC=F',   # Gold futures
+    'BTC': 'BTC-USD', # Bitcoin
+    'ETH': 'ETH-USD', # Ethereum
+}
+
+# Categories that trade 24/7 — always updated even on weekends
+ALWAYS_ON_CATEGORIES = {'gold', 'crypto'}
+
+# Fallback category per ticker (used when Supabase is unavailable)
+TICKER_CATEGORY_FALLBACK = {
+    'XAU': 'gold',   'VIST': 'stock', 'NVDA': 'stock', 'AXP':  'stock',
+    'VALE': 'stock',  'AMD':  'stock', 'PLTR': 'stock', 'CEG':  'stock',
+    'BMA':  'stock',  'PAM':  'stock', 'GGAL': 'stock', 'MSFT': 'stock',
+    'IBIT': 'etf',    'MOO':  'etf',   'LMND': 'stock', 'GPRK': 'stock',
+    'NBIS': 'stock',  'BABA': 'stock', 'MSTR': 'stock', 'PCLA': 'stock',
+    'OSCR': 'stock',  'TSLA': 'stock', 'NNE':  'stock', 'UNH':  'stock',
+    'GEMI': 'stock',  'BTC':  'crypto','ETH':  'crypto',
 }
 
 # Fallback ticker list used when Supabase is unavailable
@@ -99,12 +116,24 @@ def supabase_patch(path, data):
     except Exception as e:
         print(f"  ✗ Error en PATCH {path}: {e}")
 
+def is_weekend():
+    """Returns True if today is Saturday or Sunday (Argentina time, UTC-3)."""
+    now_arg = datetime.now(timezone.utc) - timedelta(hours=3)
+    return now_arg.weekday() >= 5  # 5=Saturday, 6=Sunday
+
 def fetch_portfolio_tickers():
-    """Fetch distinct tickers from Supabase positions table."""
-    rows = supabase_get('positions?select=ticker')
+    """Fetch distinct tickers and their categories from Supabase positions table.
+    Returns dict {ticker: category}."""
+    rows = supabase_get('positions?select=ticker,category')
     if not rows:
-        return []
-    return list(dict.fromkeys(r['ticker'] for r in rows if r.get('ticker')))
+        return {}
+    seen = {}
+    for r in rows:
+        t = r.get('ticker')
+        c = r.get('category', 'stock')
+        if t and t not in seen:
+            seen[t] = c
+    return seen  # {ticker: category}
 
 def fetch_watchlist_tickers():
     """Fetch distinct tickers from Supabase watchlist table."""
@@ -384,29 +413,47 @@ def main():
     now_arg = now_utc - timedelta(hours=3)
     now_str = now_utc.strftime('%Y-%m-%d %H:%M UTC')
     today   = now_arg.strftime('%Y-%m-%d')   # Argentina local date
+    weekend = is_weekend()
 
     print(f"Actualizando precios — {now_str}  (fecha AR: {today})")
+    if weekend:
+        print("  📅 Fin de semana — solo se actualizan activos 24/7 (gold, crypto)")
     print("-" * 42)
 
     # Build ticker map dynamically from Supabase
-    portfolio_tickers = fetch_portfolio_tickers()
-    watchlist_tickers = fetch_watchlist_tickers()
+    # portfolio_ticker_cats = {ticker: category}
+    portfolio_ticker_cats = fetch_portfolio_tickers()
+    portfolio_tickers     = list(portfolio_ticker_cats.keys())
+    watchlist_tickers     = fetch_watchlist_tickers()
 
     if portfolio_tickers:
-        # Combine portfolio + watchlist, deduplicated, apply symbol overrides
-        all_tickers = list(dict.fromkeys(portfolio_tickers + watchlist_tickers))
-        ticker_map  = {t: SYMBOL_OVERRIDE.get(t, t) for t in all_tickers}
+        all_tickers        = list(dict.fromkeys(portfolio_tickers + watchlist_tickers))
+        ticker_map         = {t: SYMBOL_OVERRIDE.get(t, t) for t in all_tickers}
+        ticker_cats        = portfolio_ticker_cats   # {ticker: category}
         watchlist_extended = watchlist_tickers if watchlist_tickers else WATCHLIST_TICKERS_FALLBACK
         print(f"  ✓ Tickers dinámicos: {len(portfolio_tickers)} portfolio + {len(watchlist_tickers)} watchlist")
     else:
         print("  ⚠ No se encontraron tickers en Supabase — usando lista de respaldo")
-        ticker_map  = dict(TICKER_MAP_FALLBACK)
+        ticker_map         = dict(TICKER_MAP_FALLBACK)
+        ticker_cats        = dict(TICKER_CATEGORY_FALLBACK)
         watchlist_extended = list(WATCHLIST_TICKERS_FALLBACK)
 
-    print(f"  → {len(ticker_map)} tickers a actualizar")
+    # On weekends, only update 24/7 assets (gold, crypto)
+    if weekend:
+        active_ticker_map = {
+            t: ys for t, ys in ticker_map.items()
+            if ticker_cats.get(t, 'stock') in ALWAYS_ON_CATEGORIES
+        }
+        if not active_ticker_map:
+            print("  ℹ No hay activos 24/7 en el portfolio — nada que actualizar hoy")
+            return
+        print(f"  → {len(active_ticker_map)} activos 24/7 a actualizar: {', '.join(active_ticker_map)}")
+    else:
+        active_ticker_map = ticker_map
+        print(f"  → {len(active_ticker_map)} tickers a actualizar")
     print("-" * 42)
 
-    for ticker, yahoo_sym in ticker_map.items():
+    for ticker, yahoo_sym in active_ticker_map.items():
         price = fetch_price(yahoo_sym)
         if price:
             prices[ticker] = price
@@ -418,13 +465,13 @@ def main():
         time.sleep(0.3)
 
     print("-" * 42)
-    print(f"Yahoo: {hits}/{len(ticker_map)} precios obtenidos en vivo")
+    print(f"Yahoo: {hits}/{len(active_ticker_map)} precios obtenidos en vivo")
 
     # 1. Write prices.json (legacy fallback)
     output = {
         'updated_at': now_str,
         'hits': hits,
-        'total': len(ticker_map),
+        'total': len(active_ticker_map),
         'prices': prices,
     }
     with open('prices.json', 'w') as f:
@@ -434,33 +481,35 @@ def main():
     # 2. Upsert into Supabase price_history
     save_to_supabase(prices, today)
 
-    # 2b. Backfill historical data for new portfolio tickers
-    print("-" * 42)
-    print("Verificando tickers nuevos que necesiten backfill...")
-    existing_tickers = fetch_tickers_with_history()
-    new_tickers = [t for t in portfolio_tickers if t not in existing_tickers]
-    if new_tickers:
-        print(f"  Tickers nuevos detectados: {', '.join(new_tickers)}")
-        for t in new_tickers:
-            ys = ticker_map.get(t, t)
-            time.sleep(0.5)
-            backfill_ticker(t, ys)
-    else:
-        print("  ✓ Sin tickers nuevos, backfill no necesario")
-
-    # 3. Fetch extended data for watchlist tickers
-    print("-" * 42)
-    print(f"Actualizando watchlist_meta ({len(watchlist_extended)} tickers)...")
-    wl_rows = []
-    for ticker in watchlist_extended:
-        time.sleep(0.4)
-        row = fetch_watchlist_extended(ticker)
-        if row:
-            wl_rows.append(row)
-            print(f'  {ticker:6} = ${row["price"]} | P/E: {row["pe_ratio"] or "N/A"} | Cap: {int(row["market_cap"]/1e9) if row["market_cap"] else "N/A"}B')
+    # 2b. Backfill historical data for new portfolio tickers (weekdays only)
+    if not weekend:
+        print("-" * 42)
+        print("Verificando tickers nuevos que necesiten backfill...")
+        existing_tickers = fetch_tickers_with_history()
+        new_tickers = [t for t in portfolio_tickers if t not in existing_tickers]
+        if new_tickers:
+            print(f"  Tickers nuevos detectados: {', '.join(new_tickers)}")
+            for t in new_tickers:
+                ys = ticker_map.get(t, t)
+                time.sleep(0.5)
+                backfill_ticker(t, ys)
         else:
-            print(f'  {ticker:6} = error')
-    save_watchlist_meta(wl_rows)
+            print("  ✓ Sin tickers nuevos, backfill no necesario")
+
+    # 3. Fetch extended data for watchlist tickers (weekdays only)
+    if not weekend:
+        print("-" * 42)
+        print(f"Actualizando watchlist_meta ({len(watchlist_extended)} tickers)...")
+        wl_rows = []
+        for ticker in watchlist_extended:
+            time.sleep(0.4)
+            row = fetch_watchlist_extended(ticker)
+            if row:
+                wl_rows.append(row)
+                print(f'  {ticker:6} = ${row["price"]} | P/E: {row["pe_ratio"] or "N/A"} | Cap: {int(row["market_cap"]/1e9) if row["market_cap"] else "N/A"}B')
+            else:
+                print(f'  {ticker:6} = error')
+        save_watchlist_meta(wl_rows)
 
     # 4. Check alerts and notify by email
     print("-" * 42)
