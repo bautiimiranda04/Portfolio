@@ -505,12 +505,13 @@ def main():
     else:
         save_to_supabase(prices, today)
 
-    # 2b. Backfill historical data for new portfolio tickers (weekdays only)
+    # 2b. Backfill historical data for new portfolio AND watchlist tickers (weekdays only)
     if not weekend:
         print("-" * 42)
         print("Verificando tickers nuevos que necesiten backfill...")
         existing_tickers = fetch_tickers_with_history()
-        new_tickers = [t for t in portfolio_tickers if t not in existing_tickers]
+        all_tracked = list(dict.fromkeys(portfolio_tickers + watchlist_tickers))
+        new_tickers = [t for t in all_tracked if t not in existing_tickers]
         if new_tickers:
             print(f"  Tickers nuevos detectados: {', '.join(new_tickers)}")
             for t in new_tickers:
