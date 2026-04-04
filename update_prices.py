@@ -167,6 +167,19 @@ def save_to_supabase(prices, today):
     except Exception as e:
         print(f"  ✗ Error guardando en Supabase: {e}")
 
+def get_last_saved_prices(tickers):
+    """Get the most recently saved price for each ticker from price_history."""
+    if not tickers or not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return {}
+    ticker_csv = ','.join(tickers)
+    rows = supabase_get(f'price_history?ticker=in.({ticker_csv})&order=date.desc&limit=500')
+    latest = {}
+    for r in rows:
+        t = r.get('ticker')
+        if t and t not in latest:
+            latest[t] = float(r['price'])
+    return latest
+
 def fetch_tickers_with_history():
     """Return set of tickers that already have at least one row in price_history."""
     rows = supabase_get('price_history?select=ticker')
@@ -479,7 +492,18 @@ def main():
     print("  ✓ prices.json actualizado")
 
     # 2. Upsert into Supabase price_history
-    save_to_supabase(prices, today)
+    # On weekends: only save if the price actually changed (skip if market is closed)
+    if weekend:
+        last_saved = get_last_saved_prices(list(prices.keys()))
+        prices_to_save = {t: p for t, p in prices.items()
+                          if p is not None and abs(p - last_saved.get(t, 0)) > 0.001}
+        if prices_to_save:
+            save_to_supabase(prices_to_save, today)
+            print(f"  ✓ {len(prices_to_save)} precio(s) cambiaron — historial actualizado")
+        else:
+            print("  ℹ Precios sin cambios (mercado cerrado) — no se guarda en historial")
+    else:
+        save_to_supabase(prices, today)
 
     # 2b. Backfill historical data for new portfolio tickers (weekdays only)
     if not weekend:
