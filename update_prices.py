@@ -22,7 +22,7 @@ ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').sp
 
 # Override Yahoo Finance symbol for tickers where the symbol differs
 SYMBOL_OVERRIDE = {
-    'XAU': 'GC=F',   # Gold futures
+    'XAU': 'XAUT-USD',   # Gold futures
     'BTC': 'BTC-USD', # Bitcoin
     'ETH': 'ETH-USD', # Ethereum
 }
@@ -43,7 +43,7 @@ TICKER_CATEGORY_FALLBACK = {
 
 # Fallback ticker list used when Supabase is unavailable
 TICKER_MAP_FALLBACK = {
-    'XAU':  'GC=F',  'VIST': 'VIST',  'NVDA': 'NVDA',  'AXP':  'AXP',
+    'XAU':  'XAUT-USD',  'VIST': 'VIST',  'NVDA': 'NVDA',  'AXP':  'AXP',
     'VALE': 'VALE',   'AMD':  'AMD',   'PLTR': 'PLTR',  'CEG':  'CEG',
     'BMA':  'BMA',    'PAM':  'PAM',   'GGAL': 'GGAL',  'MSFT': 'MSFT',
     'IBIT': 'IBIT',   'MOO':  'MOO',   'LMND': 'LMND',  'GPRK': 'GPRK',
