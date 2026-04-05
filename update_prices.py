@@ -152,20 +152,23 @@ def save_to_supabase(prices, today):
         for ticker, price in prices.items()
         if price is not None
     ]
-    url = f'{SUPABASE_URL}/rest/v1/price_history'
+    # Specify on_conflict so PostgREST knows which unique constraint to use for upsert
+    url = f'{SUPABASE_URL}/rest/v1/price_history?on_conflict=ticker,date'
     data = json.dumps(rows).encode('utf-8')
     headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
         'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
     }
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             print(f"  ✓ Supabase: {len(rows)} precios guardados para {today}")
+            return True
     except Exception as e:
         print(f"  ✗ Error guardando en Supabase: {e}")
+        return False
 
 def get_last_saved_prices(tickers):
     """Get the most recently saved price for each ticker from price_history."""
@@ -498,8 +501,9 @@ def main():
         prices_to_save = {t: p for t, p in prices.items()
                           if p is not None and abs(p - last_saved.get(t, 0)) > 0.001}
         if prices_to_save:
-            save_to_supabase(prices_to_save, today)
-            print(f"  ✓ {len(prices_to_save)} precio(s) cambiaron — historial actualizado")
+            saved = save_to_supabase(prices_to_save, today)
+            if saved:
+                print(f"  ✓ {len(prices_to_save)} precio(s) cambiaron — historial actualizado")
         else:
             print("  ℹ Precios sin cambios (mercado cerrado) — no se guarda en historial")
     else:
@@ -548,3 +552,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
