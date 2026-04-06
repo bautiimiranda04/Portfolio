@@ -182,20 +182,33 @@ def build_portfolio_context(positions, watchlist):
         'portfolio': portfolio_data, 'watchlist': watchlist_data,
     }
 
-def call_gemini(prompt):
+def call_gemini(prompt, retries=4):
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}'
     payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}}
     body = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=body, method='POST')
-    req.add_header('Content-Type', 'application/json')
-    try:
-        with urllib.request.urlopen(req, timeout=90) as r:
-            resp = json.loads(r.read().decode())
-            return resp['candidates'][0]['content']['parts'][0]['text']
-    except Exception as e:
-        print(f'  Gemini error: {e}')
-        return None
+    for attempt in range(retries):
+        req = urllib.request.Request(url, data=body, method='POST')
+        req.add_header('Content-Type', 'application/json')
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                resp = json.loads(r.read().decode())
+                return resp['candidates'][0]['content']['parts'][0]['text']
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries - 1:
+                wait = 30 * (attempt + 1)
+                print(f'  Gemini 429 rate limit — esperando {wait}s (intento {attempt+1}/{retries})...')
+                time.sleep(wait)
+                continue
+            print(f'  Gemini error HTTP {e.code}: {e.read().decode()[:200]}')
+            return None
+        except Exception as e:
+            print(f'  Gemini error: {e}')
+            if attempt < retries - 1:
+                time.sleep(20)
+                continue
+            return None
+    return None
 
 def build_gemini_prompt(ctx):
     s = ctx['summary']
