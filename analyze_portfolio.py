@@ -199,7 +199,7 @@ def build_portfolio_context(positions, watchlist):
     }
 
 def call_gemini(prompt, retries=4):
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}'
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key={GEMINI_KEY}'
     payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}}
     body = json.dumps(payload).encode()
@@ -323,24 +323,37 @@ def main():
     print('\nObteniendo datos de Yahoo Finance...')
     ctx = build_portfolio_context(positions, watchlist)
 
+    # Save prices FIRST (before Gemini) so they're always recorded even if Gemini fails
+    print('\nGuardando precios en price_history...')
+    price_rows = []
+    for ticker, d in ctx['portfolio'].items():
+        if d['current_price'] is not None:
+            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
+    for ticker, d in ctx['watchlist'].items():
+        if d['current_price'] is not None:
+            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
+    if price_rows:
+        ok_ph = sb_upsert_batch('price_history', price_rows, on_conflict='ticker,date')
+        print(f'  {len(price_rows)} precios guardados en price_history — {"OK" if ok_ph else "ERROR"}')
+
     print('\nLlamando a Gemini...')
     prompt = build_gemini_prompt(ctx)
     ai_text = call_gemini(prompt)
     if not ai_text:
-        print('Gemini no respondio')
-        sys.exit(1)
-
-    try:
-        text = ai_text.strip()
-        if text.startswith('```'):
-            text = text.split('```')[1]
-            if text.startswith('json'):
-                text = text[4:]
-        report_json = json.loads(text.strip())
-        print('Analisis generado OK')
-    except json.JSONDecodeError as e:
-        print(f'JSON parse error: {e}')
-        report_json = {'resumen_ejecutivo': ai_text, 'error': 'parse_failed'}
+        print('Gemini no respondio (cupo agotado o error). Guardando reporte parcial sin analisis AI.')
+        report_json = {'resumen_ejecutivo': 'Análisis no disponible hoy (cupo de Gemini agotado). Los datos de mercado sí fueron guardados.', 'semaforo': [], 'destacados_positivos': [], 'alertas': [], 'oportunidades_watchlist': [], 'accion_semanal': '', 'contexto_macro': ''}
+    else:
+        try:
+            text = ai_text.strip()
+            if text.startswith('```'):
+                text = text.split('```')[1]
+                if text.startswith('json'):
+                    text = text[4:]
+            report_json = json.loads(text.strip())
+            print('Analisis generado OK')
+        except json.JSONDecodeError as e:
+            print(f'JSON parse error: {e}')
+            report_json = {'resumen_ejecutivo': ai_text, 'error': 'parse_failed'}
 
     full_report = {
         'report_date': today,
@@ -351,26 +364,12 @@ def main():
         'generated_at': datetime.datetime.utcnow().isoformat() + 'Z',
     }
 
-    print('\nGuardando en Supabase...')
+    print('\nGuardando reporte en Supabase...')
     ok = sb_upsert('analyst_reports', {'report_date': today, 'report_json': full_report}, on_conflict='report_date')
     if ok:
         print(f'Reporte del {today} guardado OK')
     else:
-        print('Error al guardar - verificar que la tabla analyst_reports existe en Supabase')
-        sys.exit(1)
-
-    # Save daily prices to price_history table (enables daily/weekly change tracking in portfolio)
-    print('\nGuardando precios en price_history...')
-    price_rows = []
-    for ticker, d in ctx['portfolio'].items():
-        if d['current_price'] is not None:
-            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
-    for ticker, d in ctx['watchlist'].items():
-        if d['current_price'] is not None:
-            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
-    if price_rows:
-        ok2 = sb_upsert_batch('price_history', price_rows, on_conflict='ticker,date')
-        print(f'  {len(price_rows)} precios guardados en price_history')
+        print('Error al guardar reporte - verificar que la tabla analyst_reports existe en Supabase')
 
     print('\nSuper Analyst completado!')
 
