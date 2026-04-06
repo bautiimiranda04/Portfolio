@@ -199,7 +199,7 @@ def build_portfolio_context(positions, watchlist):
     }
 
 def call_gemini(prompt, retries=4):
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key={GEMINI_KEY}'
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}'
     payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}}
     body = json.dumps(payload).encode()
