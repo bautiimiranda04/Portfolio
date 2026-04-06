@@ -18,14 +18,24 @@ YAHOO_OVERRIDE = {'XAU':'XAUT-USD','BTC':'BTC-USD','ETH':'ETH-USD'}
 HEADERS_YF = {'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept':'application/json'}
 
 # ── HELPERS ──────────────────────────────────────────────────────────
-def fetch_json(url, headers=None, timeout=12):
+def fetch_json(url, headers=None, timeout=12, retries=2):
     req = urllib.request.Request(url, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.loads(r.read().decode())
-    except Exception as e:
-        print(f'  ⚠ fetch_json error: {url[:80]} → {e}')
-        return None
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < retries:
+                wait = 8 * (attempt + 1)
+                print(f'  ⏳ 429 rate limit — esperando {wait}s...', flush=True)
+                time.sleep(wait)
+                continue
+            print(f'  ⚠ fetch_json error: {url[:80]} → HTTP {e.code}')
+            return None
+        except Exception as e:
+            print(f'  ⚠ fetch_json error: {url[:80]} → {e}')
+            return None
+    return None
 
 def sb_get(path, params=''):
     url = f'{SUPABASE_URL}/rest/v1/{path}?{params}'
@@ -187,12 +197,12 @@ def build_portfolio_context(positions, watchlist):
     for ticker, meta in unique_tickers.items():
         print(f'  → {ticker}...', end=' ', flush=True)
         px = get_yahoo_price(ticker)
-        time.sleep(0.4)  # rate limit
+        time.sleep(1.2)  # rate limit
         summary = get_yahoo_summary(ticker)
-        time.sleep(0.4)
+        time.sleep(1.2)
         analyst = parse_analyst(summary)
         news = get_yahoo_news(ticker, 2)
-        time.sleep(0.3)
+        time.sleep(0.8)
 
         # Calculate portfolio stats for this ticker
         pos_list = [p for p in positions if p['ticker'] == ticker]
@@ -303,8 +313,9 @@ def build_gemini_prompt(ctx):
         news_str = ''
         if d.get('recent_news'):
             news_str = ' | Noticias: ' + ' | '.join(n['title'][:60] for n in d['recent_news'][:2])
+        px_str = f"${d['current_price']:.2f}" if d['current_price'] is not None else 'N/D'
         pos_lines.append(
-            f"• {ticker} ({d['name']}) — ${d['current_price']:.2f} | G/P: {updown} | "
+            f"• {ticker} ({d['name']}) — {px_str} | G/P: {updown} | "
             f"Wall St: {reco} ({analysts_n} analistas), {target_str}{upgrades_str}{news_str}"
         )
 
@@ -318,7 +329,8 @@ def build_gemini_prompt(ctx):
         price = d['current_price']
         upside = ((target / price - 1) * 100) if target and price else None
         upside_str = f' ({upside:+.1f}% upside)' if upside else ''
-        wl_lines.append(f"• {ticker} ({d['name']}) — ${price:.2f} | Wall St: {reco}, {target_str}{upside_str} | Nota: {d['note']}")
+        price_str = f'${price:.2f}' if price is not None else 'N/D'
+        wl_lines.append(f"• {ticker} ({d['name']}) — {price_str} | Wall St: {reco}, {target_str}{upside_str} | Nota: {d['note']}")
 
     prompt = f"""Sos un analista financiero senior con acceso a datos reales de Wall Street.
 Analizá este portfolio de inversiones y generá un informe ejecutivo en español, profesional y directo.
