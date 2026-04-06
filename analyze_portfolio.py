@@ -10,9 +10,9 @@ import os, json, datetime, time, sys
 import urllib.request, urllib.error
 
 # ── CONFIG (from GitHub Secrets / env vars) ──────────────────────────
-SUPABASE_URL = os.environ['SUPABASE_URL']   # https://xxxx.supabase.co
-SUPABASE_KEY = os.environ['SUPABASE_KEY']   # anon key
-GEMINI_KEY   = os.environ['GEMINI_API_KEY'] # from aistudio.google.com
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '')   # https://xxxx.supabase.co
+SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']   # anon key
+GEMINI_KEY   = os.environ.get('GEMINI_API_KEY', '')  # from aistudio.google.com
 
 YAHOO_OVERRIDE = {'XAU':'XAUT-USD','BTC':'BTC-USD','ETH':'ETH-USD'}
 HEADERS_YF = {'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept':'application/json'}
@@ -376,6 +376,19 @@ Reglas:
 
 # ── MAIN ──────────────────────────────────────────────────────────────
 def main():
+    # Validate required secrets up front
+    missing = []
+    if not os.environ.get('SUPABASE_URL'): missing.append('SUPABASE_URL')
+    if not os.environ.get('SUPABASE_SERVICE_KEY'): missing.append('SUPABASE_SERVICE_KEY')
+    if not os.environ.get('GEMINI_API_KEY'):
+        missing.append('GEMINI_API_KEY — obtenerla en: https://aistudio.google.com → Get API Key → Create API Key')
+    if missing:
+        print('❌ Faltan los siguientes secrets de GitHub Actions:')
+        for m in missing:
+            print(f'   • {m}')
+        print('\n👉 Ir a: github.com/bautiimiranda04/Portfolio → Settings → Secrets and variables → Actions')
+        sys.exit(1)
+
     today = datetime.date.today().isoformat()
     print(f'\n🧠 Super Analyst — {today}')
     print('=' * 50)
@@ -433,6 +446,7 @@ def main():
 
     # 5. Save to Supabase analyst_reports table
     print('\n💾 Guardando en Supabase...')
+    # Try upsert — if table doesn't exist, we get a 404 with clear message
     ok = sb_upsert('analyst_reports', {
         'report_date': today,
         'report_json': full_report,
@@ -441,9 +455,20 @@ def main():
     if ok:
         print(f'  ✓ Reporte del {today} guardado exitosamente')
     else:
-        print(f'  ❌ Error al guardar reporte')
-        # Try insert as fallback
-        sb_post('analyst_reports', {'report_date': today, 'report_json': full_report})
+        print(f'  ❌ Error al guardar reporte — probablemente la tabla analyst_reports no existe.')
+        print('  👉 Crear la tabla en Supabase SQL Editor:')
+        print('     https://supabase.com/dashboard/project/wnymdtditjzvqftuhzlf/sql/new')
+        print("""     SQL a ejecutar:
+     CREATE TABLE IF NOT EXISTS analyst_reports (
+       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+       report_date DATE NOT NULL UNIQUE,
+       report_json JSONB NOT NULL,
+       created_at TIMESTAMPTZ DEFAULT NOW()
+     );
+     ALTER TABLE analyst_reports ENABLE ROW LEVEL SECURITY;
+     CREATE POLICY \"read_all\" ON analyst_reports FOR SELECT USING (true);
+     """)
+        sys.exit(1)
 
     print('\n✅ Super Analyst completado')
 
