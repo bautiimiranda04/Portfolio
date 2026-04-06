@@ -1,61 +1,26 @@
 #!/usr/bin/env python3
 """
 Super Analyst — analyze_portfolio.py
-Runs daily via GitHub Actions.
-Fetches portfolio from Supabase, gets Yahoo Finance analyst data,
-synthesizes with Gemini, saves report back to Supabase.
+Uses yfinance (handles Yahoo Finance auth properly, no 429 issues).
 """
 
 import os, json, datetime, time, sys
 import urllib.request, urllib.error
 
-# ── CONFIG (from GitHub Secrets / env vars) ──────────────────────────
-SUPABASE_URL = os.environ.get('SUPABASE_URL', '')   # https://xxxx.supabase.co
-SUPABASE_KEY = os.environ['SUPABASE_SERVICE_KEY']   # anon key
-GEMINI_KEY   = os.environ.get('GEMINI_API_KEY', '')  # from aistudio.google.com
-
-YAHOO_OVERRIDE = {'XAU':'XAUT-USD','BTC':'BTC-USD','ETH':'ETH-USD'}
-HEADERS_YF = {'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124.0 Safari/537.36', 'Accept':'application/json'}
-
-# ── HELPERS ──────────────────────────────────────────────────────────
-def fetch_json(url, headers=None, timeout=12, retries=2):
-    req = urllib.request.Request(url, headers=headers or {})
-    for attempt in range(retries + 1):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode())
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries:
-                wait = 8 * (attempt + 1)
-                print(f'  ⏳ 429 rate limit — esperando {wait}s...', flush=True)
-                time.sleep(wait)
-                continue
-            print(f'  ⚠ fetch_json error: {url[:80]} → HTTP {e.code}')
-            return None
-        except Exception as e:
-            print(f'  ⚠ fetch_json error: {url[:80]} → {e}')
-            return None
-    return None
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '')
+SUPABASE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', '')
+GEMINI_KEY   = os.environ.get('GEMINI_API_KEY', '')
+YAHOO_OVERRIDE = {'XAU': 'XAUT-USD', 'BTC': 'BTC-USD', 'ETH': 'ETH-USD'}
 
 def sb_get(path, params=''):
     url = f'{SUPABASE_URL}/rest/v1/{path}?{params}'
     hdrs = {'apikey': SUPABASE_KEY, 'Authorization': f'Bearer {SUPABASE_KEY}', 'Accept': 'application/json'}
-    return fetch_json(url, hdrs)
-
-def sb_post(path, data, prefer='return=minimal'):
-    url = f'{SUPABASE_URL}/rest/v1/{path}'
-    body = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=body, method='POST')
-    req.add_header('apikey', SUPABASE_KEY)
-    req.add_header('Authorization', f'Bearer {SUPABASE_KEY}')
-    req.add_header('Content-Type', 'application/json')
-    req.add_header('Prefer', prefer)
+    req = urllib.request.Request(url, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            resp = r.read().decode()
-            return json.loads(resp) if resp.strip() else {}
-    except urllib.error.HTTPError as e:
-        print(f'  ⚠ sb_post error {e.code}: {e.read().decode()[:200]}')
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print(f'  sb_get error: {e}')
         return None
 
 def sb_upsert(path, data, on_conflict):
@@ -71,188 +36,138 @@ def sb_upsert(path, data, on_conflict):
             r.read()
             return True
     except urllib.error.HTTPError as e:
-        print(f'  ⚠ sb_upsert error {e.code}: {e.read().decode()[:200]}')
+        print(f'  sb_upsert error {e.code}: {e.read().decode()[:200]}')
         return False
 
-# ── YAHOO FINANCE ─────────────────────────────────────────────────────
-def ysym(ticker):
-    return YAHOO_OVERRIDE.get(ticker, ticker)
+def get_ticker_data(ticker):
+    import yfinance as yf
+    sym = YAHOO_OVERRIDE.get(ticker, ticker)
+    try:
+        t = yf.Ticker(sym)
+        info = t.info or {}
+        price = info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')
+        analyst = {
+            'target_mean': info.get('targetMeanPrice'),
+            'target_high': info.get('targetHighPrice'),
+            'target_low': info.get('targetLowPrice'),
+            'recommendation_key': info.get('recommendationKey', ''),
+            'num_analyst_opinions': info.get('numberOfAnalystOpinions', 0),
+            'revenue_growth': info.get('revenueGrowth'),
+            'gross_margins': info.get('grossMargins'),
+            'forward_pe': info.get('forwardPE'),
+            'beta': info.get('beta'),
+            'sector': info.get('sector', ''),
+            'industry': info.get('industry', ''),
+            'upgrades': [],
+        }
+        try:
+            uph = t.upgrades_downgrades
+            if uph is not None and len(uph) > 0:
+                for _, row in uph.head(3).iterrows():
+                    analyst['upgrades'].append({
+                        'firm': str(row.get('Firm', '')),
+                        'action': str(row.get('Action', '')),
+                        'from': str(row.get('FromGrade', '')),
+                        'to': str(row.get('ToGrade', ''))
+                    })
+        except Exception:
+            pass
+        try:
+            news_raw = t.news or []
+            recent_news = [
+                {'title': n.get('content', {}).get('title', n.get('title', '')),
+                 'publisher': n.get('content', {}).get('provider', {}).get('displayName', '')}
+                for n in news_raw[:2]
+            ]
+        except Exception:
+            recent_news = []
+        return {'price': price, 'analyst': analyst, 'recent_news': recent_news}
+    except Exception as e:
+        print(f'  yfinance error {ticker}: {e}')
+        return {'price': None, 'analyst': {}, 'recent_news': []}
 
-def get_yahoo_summary(ticker):
-    """Get analyst data: recommendationTrend, financialData, upgradeDowngradeHistory, assetProfile"""
-    sym = ysym(ticker)
-    modules = 'recommendationTrend,financialData,upgradeDowngradeHistory,assetProfile,defaultKeyStatistics'
-    url = f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules={modules}'
-    data = fetch_json(url, HEADERS_YF)
-    if not data:
-        url2 = f'https://query2.finance.yahoo.com/v10/finance/quoteSummary/{sym}?modules={modules}'
-        data = fetch_json(url2, HEADERS_YF)
-    if not data:
-        return None
-    result = data.get('quoteSummary', {}).get('result', [])
-    return result[0] if result else None
-
-def get_yahoo_price(ticker):
-    sym = ysym(ticker)
-    url = f'https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d'
-    data = fetch_json(url, HEADERS_YF)
-    if not data:
-        url2 = f'https://query2.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=5d'
-        data = fetch_json(url2, HEADERS_YF)
-    if not data:
-        return None
-    meta = data.get('chart', {}).get('result', [{}])[0].get('meta', {})
-    return {
-        'price': meta.get('regularMarketPrice'),
-        'prev_close': meta.get('previousClose') or meta.get('chartPreviousClose'),
-        'currency': meta.get('currency', 'USD'),
-        'name': meta.get('shortName') or meta.get('longName', ticker),
-    }
-
-def get_yahoo_news(ticker, n=3):
-    sym = ysym(ticker)
-    url = f'https://query1.finance.yahoo.com/v1/finance/search?q={sym}&newsCount={n}&quotesCount=0'
-    data = fetch_json(url, HEADERS_YF)
-    if not data:
-        return []
-    news = data.get('news', [])
-    return [{'title': a.get('title', ''), 'publisher': a.get('publisher', ''), 'published': a.get('providerPublishTime', 0)} for a in news[:n]]
-
-def parse_analyst(summary):
-    """Extract key analyst metrics from quoteSummary result"""
-    if not summary:
-        return {}
-    out = {}
-
-    # Recommendation trend (last quarter)
-    rt = summary.get('recommendationTrend', {}).get('trend', [])
-    if rt:
-        latest = rt[0]  # most recent period
-        out['strong_buy'] = latest.get('strongBuy', 0)
-        out['buy'] = latest.get('buy', 0)
-        out['hold'] = latest.get('hold', 0)
-        out['sell'] = latest.get('sell', 0)
-        out['strong_sell'] = latest.get('strongSell', 0)
-        total = sum([out['strong_buy'], out['buy'], out['hold'], out['sell'], out['strong_sell']])
-        out['total_analysts'] = total
-
-    # Financial data
-    fd = summary.get('financialData', {})
-    out['target_mean'] = fd.get('targetMeanPrice', {}).get('raw') if isinstance(fd.get('targetMeanPrice'), dict) else fd.get('targetMeanPrice')
-    out['target_high'] = fd.get('targetHighPrice', {}).get('raw') if isinstance(fd.get('targetHighPrice'), dict) else fd.get('targetHighPrice')
-    out['target_low'] = fd.get('targetLowPrice', {}).get('raw') if isinstance(fd.get('targetLowPrice'), dict) else fd.get('targetLowPrice')
-    out['recommendation_key'] = fd.get('recommendationKey', '')  # 'buy','hold','sell','strong_buy'
-    out['num_analyst_opinions'] = fd.get('numberOfAnalystOpinions', {}).get('raw') if isinstance(fd.get('numberOfAnalystOpinions'), dict) else fd.get('numberOfAnalystOpinions')
-
-    # Revenue growth, gross margins
-    out['revenue_growth'] = fd.get('revenueGrowth', {}).get('raw') if isinstance(fd.get('revenueGrowth'), dict) else None
-    out['gross_margins'] = fd.get('grossMargins', {}).get('raw') if isinstance(fd.get('grossMargins'), dict) else None
-
-    # Key stats
-    ks = summary.get('defaultKeyStatistics', {})
-    def raw(d, key):
-        v = d.get(key, {})
-        return v.get('raw') if isinstance(v, dict) else v
-    out['pe_forward'] = raw(ks, 'forwardPE')
-    out['beta'] = raw(ks, 'beta')
-    out['short_ratio'] = raw(ks, 'shortRatio')
-
-    # Recent upgrades/downgrades (last 5)
-    uph = summary.get('upgradeDowngradeHistory', {}).get('history', [])[:5]
-    out['upgrades'] = [
-        {'firm': u.get('firm', ''), 'action': u.get('action', ''), 'from': u.get('fromGrade', ''), 'to': u.get('toGrade', '')}
-        for u in uph
-    ]
-
-    # Asset profile
-    ap = summary.get('assetProfile', {})
-    out['sector'] = ap.get('sector', '')
-    out['industry'] = ap.get('industry', '')
-    out['country'] = ap.get('country', '')
-
-    return out
-
-# ── BUILD PORTFOLIO CONTEXT ───────────────────────────────────────────
 def build_portfolio_context(positions, watchlist):
-    """
-    For each unique ticker, fetch price + analyst data.
-    Returns a structured dict with portfolio summary and per-ticker data.
-    """
-    # Unique tickers from active positions
+    import yfinance as yf
+
     unique_tickers = {}
     for p in positions:
         t = p['ticker']
         if t not in unique_tickers:
             unique_tickers[t] = {'name': p['name'], 'category': p['category']}
 
-    # Unique tickers from watchlist
-    watchlist_tickers = {}
-    for w in watchlist:
-        watchlist_tickers[w['ticker']] = {'name': w.get('name', w['ticker']), 'note': w.get('note', ''), 'signal': w.get('signal', '')}
+    watchlist_tickers = {w['ticker']: {'name': w.get('name', w['ticker']), 'note': w.get('note', ''), 'signal': w.get('signal', '')} for w in watchlist}
 
-    print(f'📊 Portfolio: {len(unique_tickers)} tickers | 👁 Watchlist: {len(watchlist_tickers)} tickers')
+    print(f'Portfolio: {len(unique_tickers)} tickers | Watchlist: {len(watchlist_tickers)} tickers')
 
-    # Fetch data for portfolio tickers
+    # Batch price download
+    print('  Batch download de precios...')
+    all_syms = list({YAHOO_OVERRIDE.get(t, t) for t in unique_tickers})
+    latest_prices = {}
+    try:
+        if len(all_syms) == 1:
+            sym = all_syms[0]
+            batch_df = yf.download(sym, period='5d', interval='1d', auto_adjust=True, progress=False)
+            if not batch_df.empty:
+                price_val = float(batch_df['Close'].dropna().iloc[-1])
+                orig = next((t for t in unique_tickers if YAHOO_OVERRIDE.get(t, t) == sym), sym)
+                latest_prices[orig] = price_val
+        else:
+            batch_df = yf.download(all_syms, period='5d', interval='1d', auto_adjust=True, progress=False, threads=True)
+            if not batch_df.empty:
+                close = batch_df['Close']
+                for sym in all_syms:
+                    try:
+                        col = close[sym] if sym in close.columns else close
+                        val = float(col.dropna().iloc[-1])
+                        orig = next((t for t in unique_tickers if YAHOO_OVERRIDE.get(t, t) == sym), sym)
+                        latest_prices[orig] = val
+                    except Exception:
+                        pass
+        print(f'  {len(latest_prices)} precios obtenidos')
+    except Exception as e:
+        print(f'  Batch download error: {e}')
+
     portfolio_data = {}
     for ticker, meta in unique_tickers.items():
-        print(f'  → {ticker}...', end=' ', flush=True)
-        px = get_yahoo_price(ticker)
-        time.sleep(1.2)  # rate limit
-        summary = get_yahoo_summary(ticker)
-        time.sleep(1.2)
-        analyst = parse_analyst(summary)
-        news = get_yahoo_news(ticker, 2)
-        time.sleep(0.8)
-
-        # Calculate portfolio stats for this ticker
+        print(f'  {ticker}...', end=' ', flush=True)
+        data = get_ticker_data(ticker)
+        time.sleep(0.3)
+        current_price = latest_prices.get(ticker) or data['price']
         pos_list = [p for p in positions if p['ticker'] == ticker]
         total_qty = sum(p['qty'] for p in pos_list)
         total_invested = sum(p['qty'] * p['buy_price'] for p in pos_list)
-        current_price = px['price'] if px else (pos_list[0]['last_price'] or pos_list[0]['buy_price'])
+        total_dividends = sum(float(p.get('dividends', 0) or 0) for p in pos_list)
         current_value = total_qty * current_price if current_price else 0
-        total_dividends = sum(p.get('dividends', 0) or 0 for p in pos_list)
-        gain = (current_value - total_invested + total_dividends) if current_value else 0
+        gain = current_value - total_invested + total_dividends if current_value else 0
         gain_pct = gain / total_invested if total_invested > 0 else 0
-
+        analyst = data['analyst']
         portfolio_data[ticker] = {
-            'name': meta['name'],
-            'category': meta['category'],
-            'qty': total_qty,
-            'invested': round(total_invested, 2),
-            'current_price': current_price,
+            'name': meta['name'], 'category': meta['category'],
+            'qty': total_qty, 'invested': round(total_invested, 2),
+            'current_price': round(current_price, 2) if current_price else None,
             'current_value': round(current_value, 2),
-            'gain_usd': round(gain, 2),
-            'gain_pct': round(gain_pct * 100, 2),
-            'analyst': analyst,
-            'recent_news': news,
-            'sector': analyst.get('sector') or '',
-            'industry': analyst.get('industry') or '',
+            'gain_usd': round(gain, 2), 'gain_pct': round(gain_pct * 100, 2),
+            'analyst': analyst, 'recent_news': data['recent_news'],
+            'sector': analyst.get('sector', ''),
         }
-        rating = analyst.get('recommendation_key', '—')
+        reco = analyst.get('recommendation_key', '-')
         target = analyst.get('target_mean')
-        print(f'✓ ${current_price:.2f} | rating={rating} | target={f"${target:.2f}" if target else "—"}')
+        px = f"${current_price:.2f}" if current_price else "N/D"
+        print(f"OK {px} | {reco} | target={'$'+f'{target:.2f}' if target else '-'}")
 
-    # Fetch watchlist data (lighter — just price + analyst rating)
     watchlist_data = {}
-    for ticker, meta in list(watchlist_tickers.items())[:10]:  # limit to 10
+    for ticker, meta in list(watchlist_tickers.items())[:10]:
         if ticker in portfolio_data:
-            continue  # already have it
-        print(f'  👁 watchlist {ticker}...', end=' ', flush=True)
-        px = get_yahoo_price(ticker)
-        time.sleep(0.4)
-        summary = get_yahoo_summary(ticker)
-        time.sleep(0.4)
-        analyst = parse_analyst(summary)
+            continue
+        print(f'  watchlist {ticker}...', end=' ', flush=True)
+        data = get_ticker_data(ticker)
+        time.sleep(0.3)
         watchlist_data[ticker] = {
-            'name': meta['name'],
-            'note': meta['note'],
-            'signal': meta['signal'],
-            'current_price': px['price'] if px else None,
-            'analyst': analyst,
+            'name': meta['name'], 'note': meta['note'], 'signal': meta['signal'],
+            'current_price': data['price'], 'analyst': data['analyst'],
         }
-        print(f'✓')
+        print('ok')
 
-    # Portfolio summary
     total_invested = sum(d['invested'] for d in portfolio_data.values())
     total_value = sum(d['current_value'] for d in portfolio_data.values())
     total_gain = sum(d['gain_usd'] for d in portfolio_data.values())
@@ -260,36 +175,26 @@ def build_portfolio_context(positions, watchlist):
 
     return {
         'summary': {
-            'total_invested': round(total_invested, 2),
-            'total_value': round(total_value, 2),
-            'total_gain_usd': round(total_gain, 2),
-            'total_gain_pct': round(total_gain_pct, 2),
-            'num_positions': len(unique_tickers),
-            'as_of': datetime.date.today().isoformat(),
+            'total_invested': round(total_invested, 2), 'total_value': round(total_value, 2),
+            'total_gain_usd': round(total_gain, 2), 'total_gain_pct': round(total_gain_pct, 2),
+            'num_positions': len(unique_tickers), 'as_of': datetime.date.today().isoformat(),
         },
-        'portfolio': portfolio_data,
-        'watchlist': watchlist_data,
+        'portfolio': portfolio_data, 'watchlist': watchlist_data,
     }
 
-# ── GEMINI API ────────────────────────────────────────────────────────
-def call_gemini(prompt, system=''):
+def call_gemini(prompt):
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}'
-    payload = {
-        'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-        'systemInstruction': {'parts': [{'text': system}]} if system else None,
-        'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}
-    }
-    if not payload['systemInstruction']:
-        del payload['systemInstruction']
+    payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
+               'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}}
     body = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=body, method='POST')
     req.add_header('Content-Type', 'application/json')
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=90) as r:
             resp = json.loads(r.read().decode())
             return resp['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
-        print(f'  ⚠ Gemini error: {e}')
+        print(f'  Gemini error: {e}')
         return None
 
 def build_gemini_prompt(ctx):
@@ -297,33 +202,30 @@ def build_gemini_prompt(ctx):
     pf = ctx['portfolio']
     wl = ctx['watchlist']
 
-    # Format portfolio positions
     pos_lines = []
     for ticker, d in sorted(pf.items(), key=lambda x: -abs(x[1]['gain_usd'])):
         a = d['analyst']
-        reco = a.get('recommendation_key', '?').upper()
+        reco = a.get('recommendation_key', '?').upper().replace('_', ' ')
         target = a.get('target_mean')
         target_str = f'Target: ${target:.2f}' if target else 'sin target'
         updown = f"+{d['gain_usd']:,.0f} ({d['gain_pct']:+.1f}%)" if d['gain_usd'] >= 0 else f"{d['gain_usd']:,.0f} ({d['gain_pct']:+.1f}%)"
-        analysts_n = a.get('total_analysts') or a.get('num_analyst_opinions') or 0
+        analysts_n = a.get('num_analyst_opinions') or 0
         upgrades_str = ''
         if a.get('upgrades'):
             u = a['upgrades'][0]
-            upgrades_str = f" | Último: {u['firm']} {u['action']} ({u['from']}→{u['to']})"
+            upgrades_str = f" | Rec: {u['firm']} {u['action']} ({u['from']}→{u['to']})"
         news_str = ''
         if d.get('recent_news'):
-            news_str = ' | Noticias: ' + ' | '.join(n['title'][:60] for n in d['recent_news'][:2])
+            titles = [n['title'][:60] for n in d['recent_news'][:2] if n.get('title')]
+            if titles:
+                news_str = ' | Noticias: ' + ' / '.join(titles)
         px_str = f"${d['current_price']:.2f}" if d['current_price'] is not None else 'N/D'
-        pos_lines.append(
-            f"• {ticker} ({d['name']}) — {px_str} | G/P: {updown} | "
-            f"Wall St: {reco} ({analysts_n} analistas), {target_str}{upgrades_str}{news_str}"
-        )
+        pos_lines.append(f"• {ticker} ({d['name']}) — {px_str} | G/P: {updown} | Wall St: {reco} ({analysts_n} analistas), {target_str}{upgrades_str}{news_str}")
 
-    # Format watchlist
     wl_lines = []
     for ticker, d in wl.items():
         a = d['analyst']
-        reco = a.get('recommendation_key', '?').upper()
+        reco = a.get('recommendation_key', '?').upper().replace('_', ' ')
         target = a.get('target_mean')
         target_str = f'Target: ${target:.2f}' if target else 'sin target'
         price = d['current_price']
@@ -332,7 +234,7 @@ def build_gemini_prompt(ctx):
         price_str = f'${price:.2f}' if price is not None else 'N/D'
         wl_lines.append(f"• {ticker} ({d['name']}) — {price_str} | Wall St: {reco}, {target_str}{upside_str} | Nota: {d['note']}")
 
-    prompt = f"""Sos un analista financiero senior con acceso a datos reales de Wall Street.
+    return f"""Sos un analista financiero senior con acceso a datos reales de Wall Street.
 Analizá este portfolio de inversiones y generá un informe ejecutivo en español, profesional y directo.
 
 ═══ RESUMEN DEL PORTFOLIO ═══
@@ -348,105 +250,69 @@ Posiciones activas: {s['num_positions']} tickers únicos
 ═══ WATCHLIST / POTENCIALES INVERSIONES ═══
 {chr(10).join(wl_lines) if wl_lines else '(Watchlist vacía)'}
 
-═══ INSTRUCCIONES PARA EL INFORME ═══
-
 Generá un informe JSON con esta estructura EXACTA (sin texto fuera del JSON):
 
 {{
-  "resumen_ejecutivo": "2-3 párrafos con el estado general del portfolio: qué funcionó, qué no, tendencias macro relevantes. Sé específico con números.",
-
-  "semaforo": [
-    {{"ticker": "XYZ", "emoji": "🟢", "estado": "Mantener/Comprar/Vender/Vigilar", "razon": "1 línea concisa basada en datos"}}
-  ],
-
-  "destacados_positivos": [
-    {{"ticker": "XYZ", "titulo": "título corto", "detalle": "análisis con datos concretos de Wall St, por qué seguir o tomar ganancias"}}
-  ],
-
-  "alertas": [
-    {{"ticker": "XYZ", "nivel": "🔴/🟡", "titulo": "título corto", "detalle": "riesgo específico con datos"}}
-  ],
-
-  "oportunidades_watchlist": [
-    {{"ticker": "XYZ", "titulo": "título corto", "detalle": "por qué ahora puede ser buen momento de entrada, upside potencial"}}
-  ],
-
-  "accion_semanal": "1 acción concreta y prioritaria que el inversor debería considerar esta semana. Sin vaguedades.",
-
-  "contexto_macro": "2-3 oraciones sobre el contexto de mercado global relevante para este portfolio específico."
+  "resumen_ejecutivo": "2-3 párrafos con el estado general del portfolio: qué funcionó, qué no, tendencias macro. Sé específico con números.",
+  "semaforo": [{{"ticker": "XYZ", "emoji": "🟢/🟡/🔴", "estado": "Mantener/Comprar/Vender/Vigilar", "razon": "1 línea concisa"}}],
+  "destacados_positivos": [{{"ticker": "XYZ", "titulo": "título corto", "detalle": "análisis con datos de Wall St"}}],
+  "alertas": [{{"ticker": "XYZ", "nivel": "🔴/🟡", "titulo": "título corto", "detalle": "riesgo específico"}}],
+  "oportunidades_watchlist": [{{"ticker": "XYZ", "titulo": "título", "detalle": "por qué ahora, upside potencial"}}],
+  "accion_semanal": "1 acción concreta que el inversor debería considerar esta semana.",
+  "contexto_macro": "2-3 oraciones sobre contexto de mercado global relevante para este portfolio."
 }}
 
-Reglas:
-- Semáforo: incluí TODAS las posiciones del portfolio
-- Sé ESPECÍFICO: citá precios, targets, porcentajes de los datos provistos
-- Si Wall St dice BUY con target 20% upside, decilo
-- Si hay upgrades/downgrades recientes, mencionalos
-- Tono: profesional, directo, sin relleno
-- Si algo es incierto, decilo sin inventar datos"""
+Reglas: Semáforo incluí TODAS las posiciones. Sé ESPECÍFICO con precios y targets. Tono profesional y directo."""
 
-    return prompt
-
-# ── MAIN ──────────────────────────────────────────────────────────────
 def main():
-    # Validate required secrets up front
     missing = []
-    if not os.environ.get('SUPABASE_URL'): missing.append('SUPABASE_URL')
-    if not os.environ.get('SUPABASE_SERVICE_KEY'): missing.append('SUPABASE_SERVICE_KEY')
-    if not os.environ.get('GEMINI_API_KEY'):
-        missing.append('GEMINI_API_KEY — obtenerla en: https://aistudio.google.com → Get API Key → Create API Key')
+    if not SUPABASE_URL: missing.append('SUPABASE_URL')
+    if not SUPABASE_KEY: missing.append('SUPABASE_SERVICE_KEY')
+    if not GEMINI_KEY: missing.append('GEMINI_API_KEY (https://aistudio.google.com)')
     if missing:
-        print('❌ Faltan los siguientes secrets de GitHub Actions:')
-        for m in missing:
-            print(f'   • {m}')
-        print('\n👉 Ir a: github.com/bautiimiranda04/Portfolio → Settings → Secrets and variables → Actions')
+        print('Faltan secrets:', ', '.join(missing))
         sys.exit(1)
 
     today = datetime.date.today().isoformat()
-    print(f'\n🧠 Super Analyst — {today}')
+    print(f'\nSuper Analyst — {today}')
     print('=' * 50)
 
-    # 1. Load positions from Supabase
-    print('\n📥 Cargando datos de Supabase...')
+    print('\nCargando datos de Supabase...')
     positions = sb_get('positions', 'select=*')
     watchlist = sb_get('watchlist', 'select=*') or []
-
     if not positions:
-        print('❌ No se pudieron cargar las posiciones')
+        print('No se pudieron cargar posiciones')
         sys.exit(1)
 
-    print(f'  ✓ {len(positions)} posiciones | {len(watchlist)} watchlist')
+    for p in positions:
+        p['qty'] = float(p.get('qty', 0) or 0)
+        p['buy_price'] = float(p.get('buy_price', 0) or 0)
+        p['dividends'] = float(p.get('dividends', 0) or 0)
 
-    # 2. Build portfolio context with Yahoo Finance data
-    print('\n📡 Obteniendo datos de Yahoo Finance...')
+    print(f'{len(positions)} posiciones | {len(watchlist)} watchlist')
+
+    print('\nObteniendo datos de Yahoo Finance...')
     ctx = build_portfolio_context(positions, watchlist)
 
-    # 3. Call Gemini
-    print('\n🤖 Llamando a Gemini...')
+    print('\nLlamando a Gemini...')
     prompt = build_gemini_prompt(ctx)
     ai_text = call_gemini(prompt)
-
     if not ai_text:
-        print('❌ Gemini no respondió')
+        print('Gemini no respondio')
         sys.exit(1)
 
-    # Parse JSON from Gemini response
     try:
-        # Sometimes Gemini wraps in ```json ... ```
         text = ai_text.strip()
         if text.startswith('```'):
             text = text.split('```')[1]
             if text.startswith('json'):
                 text = text[4:]
         report_json = json.loads(text.strip())
+        print('Analisis generado OK')
     except json.JSONDecodeError as e:
-        print(f'⚠ Gemini JSON parse error: {e}')
-        print('Raw response (first 500 chars):', ai_text[:500])
-        # Save raw text as fallback
+        print(f'JSON parse error: {e}')
         report_json = {'resumen_ejecutivo': ai_text, 'error': 'parse_failed'}
 
-    print('  ✓ Análisis generado')
-
-    # 4. Build full report to save
     full_report = {
         'report_date': today,
         'portfolio_summary': ctx['summary'],
@@ -456,33 +322,15 @@ def main():
         'generated_at': datetime.datetime.utcnow().isoformat() + 'Z',
     }
 
-    # 5. Save to Supabase analyst_reports table
-    print('\n💾 Guardando en Supabase...')
-    # Try upsert — if table doesn't exist, we get a 404 with clear message
-    ok = sb_upsert('analyst_reports', {
-        'report_date': today,
-        'report_json': full_report,
-    }, on_conflict='report_date')
-
+    print('\nGuardando en Supabase...')
+    ok = sb_upsert('analyst_reports', {'report_date': today, 'report_json': full_report}, on_conflict='report_date')
     if ok:
-        print(f'  ✓ Reporte del {today} guardado exitosamente')
+        print(f'Reporte del {today} guardado OK')
     else:
-        print(f'  ❌ Error al guardar reporte — probablemente la tabla analyst_reports no existe.')
-        print('  👉 Crear la tabla en Supabase SQL Editor:')
-        print('     https://supabase.com/dashboard/project/wnymdtditjzvqftuhzlf/sql/new')
-        print("""     SQL a ejecutar:
-     CREATE TABLE IF NOT EXISTS analyst_reports (
-       id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-       report_date DATE NOT NULL UNIQUE,
-       report_json JSONB NOT NULL,
-       created_at TIMESTAMPTZ DEFAULT NOW()
-     );
-     ALTER TABLE analyst_reports ENABLE ROW LEVEL SECURITY;
-     CREATE POLICY \"read_all\" ON analyst_reports FOR SELECT USING (true);
-     """)
+        print('Error al guardar - verificar que la tabla analyst_reports existe en Supabase')
         sys.exit(1)
 
-    print('\n✅ Super Analyst completado')
+    print('\nSuper Analyst completado!')
 
 if __name__ == '__main__':
     main()
