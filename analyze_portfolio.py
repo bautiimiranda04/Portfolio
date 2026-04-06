@@ -23,6 +23,22 @@ def sb_get(path, params=''):
         print(f'  sb_get error: {e}')
         return None
 
+def sb_upsert_batch(path, data_list, on_conflict):
+    url = f'{SUPABASE_URL}/rest/v1/{path}?on_conflict={on_conflict}'
+    body = json.dumps(data_list).encode()
+    req = urllib.request.Request(url, data=body, method='POST')
+    req.add_header('apikey', SUPABASE_KEY)
+    req.add_header('Authorization', f'Bearer {SUPABASE_KEY}')
+    req.add_header('Content-Type', 'application/json')
+    req.add_header('Prefer', 'resolution=merge-duplicates,return=minimal')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            r.read()
+            return True
+    except urllib.error.HTTPError as e:
+        print(f'  sb_upsert_batch error {e.code}: {e.read().decode()[:200]}')
+        return False
+
 def sb_upsert(path, data, on_conflict):
     url = f'{SUPABASE_URL}/rest/v1/{path}?on_conflict={on_conflict}'
     body = json.dumps(data).encode()
@@ -342,6 +358,19 @@ def main():
     else:
         print('Error al guardar - verificar que la tabla analyst_reports existe en Supabase')
         sys.exit(1)
+
+    # Save daily prices to price_history table (enables daily/weekly change tracking in portfolio)
+    print('\nGuardando precios en price_history...')
+    price_rows = []
+    for ticker, d in ctx['portfolio'].items():
+        if d['current_price'] is not None:
+            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
+    for ticker, d in ctx['watchlist'].items():
+        if d['current_price'] is not None:
+            price_rows.append({'ticker': ticker, 'date': today, 'price': d['current_price']})
+    if price_rows:
+        ok2 = sb_upsert_batch('price_history', price_rows, on_conflict='ticker,date')
+        print(f'  {len(price_rows)} precios guardados en price_history')
 
     print('\nSuper Analyst completado!')
 
