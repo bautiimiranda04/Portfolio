@@ -1,0 +1,28 @@
+name: Super Analyst — Daily AI Report
+
+on:
+  schedule:
+    # 9:30 AM Argentina time (UTC-3) = 12:30 UTC, weekdays
+    - cron: '30 12 * * 1-5'
+  workflow_dispatch:  # allow manual trigger
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Super Analyst
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python analyze_portfolio.py
