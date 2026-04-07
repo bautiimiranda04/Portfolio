@@ -201,7 +201,7 @@ def build_portfolio_context(positions, watchlist):
 def call_gemini(prompt, retries=4):
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}'
     payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
-               'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 8192}}
+               'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 32768}}
     body = json.dumps(payload).encode()
     for attempt in range(retries):
         req = urllib.request.Request(url, data=body, method='POST')
@@ -279,7 +279,9 @@ Posiciones activas: {s['num_positions']} tickers únicos
 ═══ WATCHLIST / POTENCIALES INVERSIONES ═══
 {chr(10).join(wl_lines) if wl_lines else '(Watchlist vacía)'}
 
-Generá un informe JSON con esta estructura EXACTA (sin texto fuera del JSON):
+IMPORTANTE: Respondé ÚNICAMENTE con el objeto JSON. Sin bloques de código markdown, sin texto antes ni después del JSON. Solo el JSON crudo comenzando con {{ y terminando con }}.
+
+Generá un informe JSON con esta estructura EXACTA:
 
 {{
   "resumen_ejecutivo": "2-3 párrafos con el estado general del portfolio: qué funcionó, qué no, tendencias macro. Sé específico con números.",
@@ -344,11 +346,21 @@ def main():
         report_json = {'resumen_ejecutivo': 'Análisis no disponible hoy (cupo de Gemini agotado). Los datos de mercado sí fueron guardados.', 'semaforo': [], 'destacados_positivos': [], 'alertas': [], 'oportunidades_watchlist': [], 'accion_semanal': '', 'contexto_macro': ''}
     else:
         try:
+            import re
             text = ai_text.strip()
-            if text.startswith('```'):
-                text = text.split('```')[1]
-                if text.startswith('json'):
-                    text = text[4:]
+            # Try to extract JSON from markdown code block first
+            json_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', text, re.DOTALL)
+            if json_match:
+                text = json_match.group(1)
+            elif text.startswith('```'):
+                # Fallback: strip opening/closing fences
+                text = re.sub(r'^```(?:json)?\s*', '', text)
+                text = re.sub(r'\s*```\s*$', '', text)
+            # If still not starting with {, try finding first {
+            if not text.strip().startswith('{'):
+                brace_idx = text.find('{')
+                if brace_idx != -1:
+                    text = text[brace_idx:]
             report_json = json.loads(text.strip())
             print('Analisis generado OK')
         except json.JSONDecodeError as e:
