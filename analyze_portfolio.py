@@ -211,9 +211,10 @@ def call_gemini(prompt, retries=4):
                 resp = json.loads(r.read().decode())
                 return resp['candidates'][0]['content']['parts'][0]['text']
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries - 1:
+            if e.code in (429, 503) and attempt < retries - 1:
                 wait = 30 * (attempt + 1)
-                print(f'  Gemini 429 rate limit — esperando {wait}s (intento {attempt+1}/{retries})...')
+                reason = 'rate limit' if e.code == 429 else 'servidor sobrecargado'
+                print(f'  Gemini {e.code} ({reason}) — reintentando en {wait}s (intento {attempt+1}/{retries})...')
                 time.sleep(wait)
                 continue
             print(f'  Gemini error HTTP {e.code}: {e.read().decode()[:200]}')
