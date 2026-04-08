@@ -228,7 +228,7 @@ def call_gemini_model(model, prompt, retries=3):
     return None
 
 def call_gemini(prompt):
-    models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    models = ['gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash-8b']
     for model in models:
         print(f'  Intentando con {model}...')
         result = call_gemini_model(model, prompt)
