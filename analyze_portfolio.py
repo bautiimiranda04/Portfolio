@@ -198,8 +198,8 @@ def build_portfolio_context(positions, watchlist):
         'portfolio': portfolio_data, 'watchlist': watchlist_data,
     }
 
-def call_gemini(prompt, retries=4):
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_KEY}'
+def call_gemini_model(model, prompt, retries=3):
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}'
     payload = {'contents': [{'role': 'user', 'parts': [{'text': prompt}]}],
                'generationConfig': {'temperature': 0.4, 'maxOutputTokens': 32768}}
     body = json.dumps(payload).encode()
@@ -214,17 +214,28 @@ def call_gemini(prompt, retries=4):
             if e.code in (429, 503) and attempt < retries - 1:
                 wait = 30 * (attempt + 1)
                 reason = 'rate limit' if e.code == 429 else 'servidor sobrecargado'
-                print(f'  Gemini {e.code} ({reason}) — reintentando en {wait}s (intento {attempt+1}/{retries})...')
+                print(f'  {model} {e.code} ({reason}) — reintentando en {wait}s (intento {attempt+1}/{retries})...')
                 time.sleep(wait)
                 continue
-            print(f'  Gemini error HTTP {e.code}: {e.read().decode()[:200]}')
+            print(f'  {model} error HTTP {e.code}: {e.read().decode()[:200]}')
             return None
         except Exception as e:
-            print(f'  Gemini error: {e}')
+            print(f'  {model} error: {e}')
             if attempt < retries - 1:
                 time.sleep(20)
                 continue
             return None
+    return None
+
+def call_gemini(prompt):
+    models = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    for model in models:
+        print(f'  Intentando con {model}...')
+        result = call_gemini_model(model, prompt)
+        if result:
+            print(f'  Respuesta OK de {model}')
+            return result
+        print(f'  {model} no disponible, probando siguiente modelo...')
     return None
 
 def build_gemini_prompt(ctx):
