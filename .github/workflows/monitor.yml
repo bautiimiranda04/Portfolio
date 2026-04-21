@@ -1,0 +1,70 @@
+name: Monitor — Auto-retry y mail si no actualizó
+
+on:
+  schedule:
+    # Cada hora entre 12:00 y 22:00 UTC (9AM-7PM Argentina), lunes a viernes
+    - cron: '0 12,13,14,15,16,17,18,19,20,21,22 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  check-and-retry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar si hubo actualización hoy
+        id: check
+        run: |
+          TODAY=$(TZ="America/Argentina/Buenos_Aires" date +%Y-%m-%d)
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+
+          COUNT=$(curl -s \
+            -H "apikey: ${{ secrets.SUPABASE_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_KEY }}" \
+            -H "Prefer: count=exact" \
+            -I "${{ secrets.SUPABASE_URL }}/rest/v1/price_history?date=eq.$TODAY" \
+            | grep -i "content-range" | grep -oP '(?<=/)\d+' | head -1)
+
+          COUNT=${COUNT:-0}
+          echo "count=$COUNT" >> $GITHUB_OUTPUT
+          echo "Filas para $TODAY: $COUNT"
+
+      - name: Disparar update-prices si faltan datos
+        if: steps.check.outputs.count == '0'
+        run: |
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/update-prices.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "update-prices disparado"
+
+      - name: Disparar analyze si faltan datos
+        if: steps.check.outputs.count == '0'
+        run: |
+          sleep 60
+          curl -s -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/analyze.yml/dispatches" \
+            -d '{"ref":"main"}'
+          echo "analyze disparado"
+
+      - name: Enviar mail de aviso
+        if: steps.check.outputs.count == '0'
+        run: |
+          NOW=$(date -u +"%H:%M UTC")
+          curl -s -X POST "https://api.emailjs.com/api/v1.0/email/send" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"service_id\": \"service_e293oyz\",
+              \"template_id\": \"template_zhubo5n\",
+              \"user_id\": \"2uDaUKYWCK5fCYx92\",
+              \"template_params\": {
+                \"ticker\": \"⚠️ MONITOR\",
+                \"name\": \"Auto-Monitor Portfolio\",
+                \"condition\": \"no habia actualizado — se disparo automaticamente\",
+                \"price\": \"${{ steps.check.outputs.today }}\",
+                \"note\": \"Reintento ejecutado a las $NOW\",
+                \"portfolio_url\": \"https://bautiimiranda04.github.io/Portfolio/\"
+              }
+            }"
+          echo "Mail enviado"
