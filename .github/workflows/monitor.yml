@@ -8,76 +8,91 @@ on:
 jobs:
   check-and-retry:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      EMAILJS_TOKEN: ${{ secrets.EMAILJS_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+
     steps:
-      - name: Verificar si hubo actualización hoy
-        id: check
+      - name: Verificar y reintentar si no actualizó hoy
         run: |
-          TODAY=$(TZ="America/Argentina/Buenos_Aires" date +%Y-%m-%d)
-          echo "today=$TODAY" >> $GITHUB_OUTPUT
+          python3 << 'EOF'
+          import urllib.request, json, subprocess, os, time
+          from datetime import datetime
 
-          # Contar filas via JSON (más confiable que content-range header)
-          COUNT=$(python3 -c "
-import urllib.request, json, sys
-url = '${{ secrets.SUPABASE_URL }}/rest/v1/price_history?date=eq.$TODAY&select=id'
-req = urllib.request.Request(url)
-req.add_header('apikey', '${{ secrets.SUPABASE_KEY }}')
-req.add_header('Authorization', 'Bearer ${{ secrets.SUPABASE_KEY }}')
-with urllib.request.urlopen(req) as r:
-    data = json.loads(r.read())
-    print(len(data))
-" 2>/dev/null || echo "0")
+          SUPABASE_URL = os.environ['SUPABASE_URL']
+          SUPABASE_KEY = os.environ['SUPABASE_KEY']
+          EMAILJS_TOKEN = os.environ['EMAILJS_TOKEN']
+          GH_TOKEN = os.environ['GH_TOKEN']
+          REPO = os.environ['REPO']
 
-          echo "count=$COUNT" >> $GITHUB_OUTPUT
-          echo "Filas para $TODAY: $COUNT"
+          # Fecha de hoy en Argentina (UTC-3)
+          from datetime import timezone, timedelta
+          tz_arg = timezone(timedelta(hours=-3))
+          today = datetime.now(tz_arg).strftime('%Y-%m-%d')
+          print(f"Verificando datos para: {today}")
 
-      - name: Disparar update-prices si faltan datos
-        if: steps.check.outputs.count == '0'
-        run: |
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/update-prices.yml/dispatches" \
-            -d '{"ref":"main"}'
-          echo "update-prices disparado"
+          # Contar filas en Supabase
+          req = urllib.request.Request(
+              f"{SUPABASE_URL}/rest/v1/price_history?date=eq.{today}&select=id"
+          )
+          req.add_header('apikey', SUPABASE_KEY)
+          req.add_header('Authorization', f'Bearer {SUPABASE_KEY}')
+          with urllib.request.urlopen(req) as r:
+              count = len(json.loads(r.read()))
+          print(f"Filas encontradas: {count}")
 
-      - name: Disparar analyze si faltan datos
-        if: steps.check.outputs.count == '0'
-        run: |
-          sleep 60
-          curl -s -X POST \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/analyze.yml/dispatches" \
-            -d '{"ref":"main"}'
-          echo "analyze disparado"
+          if count > 0:
+              print("OK — datos ya actualizados. Nada que hacer.")
+              exit(0)
 
-      - name: Enviar mail de aviso
-        if: steps.check.outputs.count == '0'
-        run: |
-          NOW=$(date -u +"%H:%M UTC")
-          python3 -c "
-import urllib.request, json
-payload = {
-  'service_id': 'service_e293oyz',
-  'template_id': 'template_zhubo5n',
-  'user_id': '2uDaUKYWCK5fCYx92',
-  'accessToken': '${{ secrets.EMAILJS_TOKEN }}',
-  'template_params': {
-    'ticker': 'MONITOR',
-    'name': 'Auto-Monitor Portfolio',
-    'condition': 'no habia actualizado hoy - se disparo automaticamente',
-    'price': '${{ steps.check.outputs.today }}',
-    'note': 'Reintento a las $NOW',
-    'portfolio_url': 'https://bautiimiranda04.github.io/Portfolio/'
-  }
-}
-req = urllib.request.Request(
-  'https://api.emailjs.com/api/v1.0/email/send',
-  data=json.dumps(payload).encode(),
-  method='POST'
-)
-req.add_header('Content-Type', 'application/json')
-req.add_header('origin', 'https://bautiimiranda04.github.io')
-with urllib.request.urlopen(req, timeout=15) as r:
-  print('Mail enviado:', r.read().decode())
-" 2>&1 || echo "Mail fallido - revisar EmailJS config"
+          print("SIN DATOS — disparando workflows y enviando mail...")
+
+          # Disparar update-prices
+          def trigger(workflow):
+              req = urllib.request.Request(
+                  f"https://api.github.com/repos/{REPO}/actions/workflows/{workflow}/dispatches",
+                  data=json.dumps({"ref": "main"}).encode(), method='POST'
+              )
+              req.add_header('Authorization', f'token {GH_TOKEN}')
+              req.add_header('Content-Type', 'application/json')
+              try:
+                  with urllib.request.urlopen(req) as r:
+                      print(f"  {workflow} disparado (HTTP {r.status})")
+              except Exception as e:
+                  print(f"  Error disparando {workflow}: {e}")
+
+          trigger('update-prices.yml')
+          time.sleep(60)
+          trigger('analyze.yml')
+
+          # Enviar mail via EmailJS
+          now_utc = datetime.utcnow().strftime('%H:%M UTC')
+          payload = {
+              "service_id": "service_e293oyz",
+              "template_id": "template_zhubo5n",
+              "user_id": "2uDaUKYWCK5fCYx92",
+              "accessToken": EMAILJS_TOKEN,
+              "template_params": {
+                  "ticker": "MONITOR",
+                  "name": "Auto-Monitor Portfolio",
+                  "condition": f"no habia actualizado el {today} - se disparo automaticamente",
+                  "price": today,
+                  "note": f"Reintento a las {now_utc}",
+                  "portfolio_url": "https://bautiimiranda04.github.io/Portfolio/"
+              }
+          }
+          req = urllib.request.Request(
+              "https://api.emailjs.com/api/v1.0/email/send",
+              data=json.dumps(payload).encode(), method='POST'
+          )
+          req.add_header('Content-Type', 'application/json')
+          req.add_header('origin', 'https://bautiimiranda04.github.io')
+          try:
+              with urllib.request.urlopen(req, timeout=15) as r:
+                  print(f"Mail enviado: {r.read().decode()}")
+          except Exception as e:
+              print(f"Error mail: {e}")
+          EOF
