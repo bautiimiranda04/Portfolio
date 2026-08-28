@@ -154,37 +154,50 @@ def fetch_watchlist_tickers():
     return list(dict.fromkeys(r['ticker'] for r in rows if r.get('ticker')))
 
 def save_to_supabase(prices, today, history_map=None):
-    """Upsert today's prices (+ recent history) into price_history table."""
+    """Upsert today's prices into price_history. Also saves yesterday + 7-days-ago for change calculations."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         print("  ⚠ SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping DB write")
         return
-    rows = [
-        {'ticker': ticker, 'date': today, 'price': price}
-        for ticker, price in prices.items()
-        if price is not None
-    ]
-    # Also add recent historical rows for daily/weekly change support
+
+    now_utc = datetime.now(timezone.utc)
+    yest_str = (now_utc - timedelta(days=1)).strftime('%Y-%m-%d')
+    week_str = (now_utc - timedelta(days=7)).strftime('%Y-%m-%d')
+    two_week_str = (now_utc - timedelta(days=14)).strftime('%Y-%m-%d')
+
+    # Build rows: today + yesterday + 7d + 14d from history
+    rows = []
+    for ticker, price in prices.items():
+        if price is not None:
+            rows.append({'ticker': ticker, 'date': today, 'price': price})
     if history_map:
         for ticker, hist in history_map.items():
-            for date_str, price in hist.items():
-                if date_str != today:  # today already added above
-                    rows.append({'ticker': ticker, 'date': date_str, 'price': price})
+            for target_date in [yest_str, week_str, two_week_str]:
+                hist_price = hist.get(target_date)
+                if hist_price:
+                    rows.append({'ticker': ticker, 'date': target_date, 'price': hist_price})
+
     url = f'{SUPABASE_URL}/rest/v1/price_history'
-    data = json.dumps(rows).encode('utf-8')
-    headers = {
+    sb_headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
         'Content-Type': 'application/json',
         'Prefer': 'resolution=merge-duplicates',
     }
-    req = urllib.request.Request(url, data=data, headers=headers, method='POST')
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            today_count = sum(1 for r in rows if r['date'] == today)
-            hist_count = len(rows) - today_count
-            print(f"  ✓ Supabase: {today_count} precios guardados para {today} + {hist_count} históricos")
-    except Exception as e:
-        print(f"  ✗ Error guardando en Supabase: {e}")
+    # Send in chunks of 200 to avoid payload limits
+    chunk_size = 200
+    saved = 0
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i:i+chunk_size]
+        req = urllib.request.Request(url, data=json.dumps(chunk).encode('utf-8'), headers=sb_headers, method='POST')
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                saved += len(chunk)
+        except Exception as e:
+            print(f"  ✗ Error guardando en Supabase (chunk {i}): {e}")
+            return
+    today_count = sum(1 for r in rows if r['date'] == today)
+    hist_count = saved - today_count
+    print(f"  ✓ Supabase: {today_count} precios guardados para {today} + {hist_count} históricos (ayer/7d)")
 
 def get_last_saved_prices(tickers):
     """Get the most recently saved price for each ticker from price_history."""
