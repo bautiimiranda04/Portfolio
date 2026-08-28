@@ -245,13 +245,13 @@ def backfill_ticker(ticker, yahoo_symbol):
                 return
             if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
                 return
-            ph_url = f'{SUPABASE_URL}/rest/v1/price_history'
+            ph_url = f'{SUPABASE_URL}/rest/v1/price_history?on_conflict=ticker,date'
             ph_data = json.dumps(rows).encode('utf-8')
             ph_headers = {
                 'apikey': SUPABASE_SERVICE_KEY,
                 'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
                 'Content-Type': 'application/json',
-                'Prefer': 'resolution=merge-duplicates',
+                'Prefer': 'resolution=merge-duplicates,return=minimal',
             }
             ph_req = urllib.request.Request(ph_url, data=ph_data, headers=ph_headers, method='POST')
             with urllib.request.urlopen(ph_req, timeout=15) as r:
@@ -391,11 +391,12 @@ def send_email(triggered_alerts, now_str):
 def fetch_watchlist_extended(ticker):
     """Fetch price history + P/E + market cap for a watchlist ticker."""
     yf_headers = {'User-Agent': 'Mozilla/5.0 (compatible; portfolio-updater/1.0)', 'Accept': 'application/json'}
+    yahoo_sym = SYMBOL_OVERRIDE.get(ticker, ticker)  # Apply BTC→BTC-USD, XAU→XAUT-USD etc.
     result = {'ticker': ticker, 'price': None, 'prev_close': None, 'week_ago_price': None,
               'hi52': None, 'lo52': None, 'pe_ratio': None, 'market_cap': None}
     try:
         # 1-year daily history for price, hi52, lo52, weekAgo
-        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1y'
+        url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}?interval=1d&range=1y'
         req = urllib.request.Request(url, headers=yf_headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
@@ -415,7 +416,7 @@ def fetch_watchlist_extended(ticker):
         return None
     try:
         # P/E ratio and market cap from quoteSummary
-        url2 = f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=summaryDetail'
+        url2 = f'https://query1.finance.yahoo.com/v10/finance/quoteSummary/{yahoo_sym}?modules=summaryDetail'
         req2 = urllib.request.Request(url2, headers=yf_headers)
         with urllib.request.urlopen(req2, timeout=10) as resp:
             d2  = json.loads(resp.read().decode())
