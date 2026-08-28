@@ -176,12 +176,13 @@ def save_to_supabase(prices, today, history_map=None):
                 if hist_price:
                     rows.append({'ticker': ticker, 'date': target_date, 'price': hist_price})
 
-    url = f'{SUPABASE_URL}/rest/v1/price_history'
+    # Use on_conflict param so PostgREST knows which columns to upsert on
+    url = f'{SUPABASE_URL}/rest/v1/price_history?on_conflict=ticker,date'
     sb_headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
         'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
     }
     # Send in chunks of 200 to avoid payload limits
     chunk_size = 200
