@@ -22,9 +22,9 @@ ALERT_EMAILS         = [e.strip() for e in os.environ.get('ALERT_EMAILS', '').sp
 
 # Override Yahoo Finance symbol for tickers where the symbol differs
 SYMBOL_OVERRIDE = {
-    'XAU': 'XAUT-USD',   # Gold futures
-    'BTC': 'BTC-USD', # Bitcoin
-    'ETH': 'ETH-USD', # Ethereum
+    'XAU': 'XAUT-USD', # Tether Gold — spot gold 1:1, cotiza 24/7 (incl. fines de semana y feriados)
+    'BTC': 'BTC-USD',  # Bitcoin
+    'ETH': 'ETH-USD',  # Ethereum
 }
 
 # Categories that trade 24/7 — always updated even on weekends
@@ -43,7 +43,7 @@ TICKER_CATEGORY_FALLBACK = {
 
 # Fallback ticker list used when Supabase is unavailable
 TICKER_MAP_FALLBACK = {
-    'XAU':  'XAUT-USD',  'VIST': 'VIST',  'NVDA': 'NVDA',  'AXP':  'AXP',
+    'XAU':  'XAUT-USD','VIST': 'VIST',  'NVDA': 'NVDA',  'AXP':  'AXP',
     'VALE': 'VALE',   'AMD':  'AMD',   'PLTR': 'PLTR',  'CEG':  'CEG',
     'BMA':  'BMA',    'PAM':  'PAM',   'GGAL': 'GGAL',  'MSFT': 'MSFT',
     'IBIT': 'IBIT',   'MOO':  'MOO',   'LMND': 'LMND',  'GPRK': 'GPRK',
@@ -54,7 +54,7 @@ TICKER_MAP_FALLBACK = {
 WATCHLIST_TICKERS_FALLBACK = ['MELI', 'GLOB', 'TSM', 'BABA']
 
 PRICE_FALLBACK = {
-    'XAU':  4489.69, 'VIST': 74.21,  'NVDA': 167.52, 'AXP':  292.97,
+    'XAU':  4632.24, 'VIST': 74.21,  'NVDA': 167.52, 'AXP':  292.97,
     'VALE': 15.03,   'AMD':  201.99,  'PLTR': 143.06,  'CEG':  301.49,
     'BMA':  69.26,   'PAM':  83.92,   'GGAL': 42.70,   'MSFT': 356.77,
     'IBIT': 37.40,   'MOO':  82.65,   'LMND': 60.70,   'GPRK': 9.62,
@@ -64,7 +64,8 @@ PRICE_FALLBACK = {
 }
 
 def fetch_price(yahoo_symbol):
-    url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range=1d'
+    """Fetch today's price and return (price, {date: price} history dict)."""
+    url = f'https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_symbol}?interval=1d&range=15d'
     headers = {
         'User-Agent': 'Mozilla/5.0 (compatible; portfolio-updater/1.0)',
         'Accept': 'application/json',
@@ -73,12 +74,22 @@ def fetch_price(yahoo_symbol):
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
-            price = data['chart']['result'][0]['meta']['regularMarketPrice']
-            if price and price > 0:
-                return round(price, 4)
+            result = data['chart']['result'][0]
+            price = result['meta']['regularMarketPrice']
+            if not price or price <= 0:
+                return None, {}
+            # Also extract recent history for daily/weekly change
+            history = {}
+            timestamps = result.get('timestamp', [])
+            closes = result['indicators']['quote'][0].get('close', [])
+            for ts, close in zip(timestamps, closes):
+                if close and close > 0:
+                    date_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%Y-%m-%d')
+                    history[date_str] = round(close, 4)
+            return round(price, 4), history
     except Exception as e:
         print(f"  Error fetching {yahoo_symbol}: {e}")
-    return None
+    return None, {}
 
 def supabase_get(path):
     """GET from Supabase REST API."""
@@ -142,8 +153,8 @@ def fetch_watchlist_tickers():
         return []
     return list(dict.fromkeys(r['ticker'] for r in rows if r.get('ticker')))
 
-def save_to_supabase(prices, today):
-    """Upsert today's prices into price_history table."""
+def save_to_supabase(prices, today, history_map=None):
+    """Upsert today's prices (+ recent history) into price_history table."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         print("  ⚠ SUPABASE_URL / SUPABASE_SERVICE_KEY not set — skipping DB write")
         return
@@ -152,23 +163,28 @@ def save_to_supabase(prices, today):
         for ticker, price in prices.items()
         if price is not None
     ]
-    # Specify on_conflict so PostgREST knows which unique constraint to use for upsert
-    url = f'{SUPABASE_URL}/rest/v1/price_history?on_conflict=ticker,date'
+    # Also add recent historical rows for daily/weekly change support
+    if history_map:
+        for ticker, hist in history_map.items():
+            for date_str, price in hist.items():
+                if date_str != today:  # today already added above
+                    rows.append({'ticker': ticker, 'date': date_str, 'price': price})
+    url = f'{SUPABASE_URL}/rest/v1/price_history'
     data = json.dumps(rows).encode('utf-8')
     headers = {
         'apikey': SUPABASE_SERVICE_KEY,
         'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
         'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
+        'Prefer': 'resolution=merge-duplicates',
     }
     req = urllib.request.Request(url, data=data, headers=headers, method='POST')
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            print(f"  ✓ Supabase: {len(rows)} precios guardados para {today}")
-            return True
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            today_count = sum(1 for r in rows if r['date'] == today)
+            hist_count = len(rows) - today_count
+            print(f"  ✓ Supabase: {today_count} precios guardados para {today} + {hist_count} históricos")
     except Exception as e:
         print(f"  ✗ Error guardando en Supabase: {e}")
-        return False
 
 def get_last_saved_prices(tickers):
     """Get the most recently saved price for each ticker from price_history."""
@@ -469,11 +485,14 @@ def main():
         print(f"  → {len(active_ticker_map)} tickers a actualizar")
     print("-" * 42)
 
+    history_map = {}  # {ticker: {date: price}} for daily/weekly change support
     for ticker, yahoo_sym in active_ticker_map.items():
-        price = fetch_price(yahoo_sym)
+        price, hist = fetch_price(yahoo_sym)
         if price:
             prices[ticker] = price
             hits += 1
+            if hist:
+                history_map[ticker] = hist
             print(f"  {ticker:6} = ${price}")
         else:
             prices[ticker] = PRICE_FALLBACK.get(ticker)
@@ -501,13 +520,12 @@ def main():
         prices_to_save = {t: p for t, p in prices.items()
                           if p is not None and abs(p - last_saved.get(t, 0)) > 0.001}
         if prices_to_save:
-            saved = save_to_supabase(prices_to_save, today)
-            if saved:
-                print(f"  ✓ {len(prices_to_save)} precio(s) cambiaron — historial actualizado")
+            save_to_supabase(prices_to_save, today)
+            print(f"  ✓ {len(prices_to_save)} precio(s) cambiaron — historial actualizado")
         else:
             print("  ℹ Precios sin cambios (mercado cerrado) — no se guarda en historial")
     else:
-        save_to_supabase(prices, today)
+        save_to_supabase(prices, today, history_map)
 
     # 2b. Backfill historical data for new portfolio AND watchlist tickers (weekdays only)
     if not weekend:
@@ -552,4 +570,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
