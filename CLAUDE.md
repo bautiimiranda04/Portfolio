@@ -87,7 +87,7 @@ Sin `?on_conflict=ticker,date` en la URL, las inserciones dan 409 Conflict.
 
 **Los horarios los dispara Supabase (pg_cron + pg_net), NO el `schedule` de GitHub**, porque el cron de GitHub llegaba con 3-5 horas de atraso. Supabase llama a la API `workflow_dispatch` de GitHub con un fine-grained PAT (solo este repo, permiso Actions: write) guardado en Supabase Vault como `github_pat`. Ver `supabase/cron.sql`.
 
-**⚠️ El PAT `supabase-cron-portfolio` VENCE EL 4 ENE 2027.** Antes de esa fecha: GitHub → Settings → Developer settings → Fine-grained tokens → Regenerate, y actualizar el secret `github_pat` en Supabase Vault (solo el bloque 1 de `supabase/cron.sql`). Si vence, los horarios dejan de dispararse y el monitor empieza a mandar mails.
+**⚠️ El PAT `supabase-cron-portfolio` VENCE EL 4 ENE 2027.** Antes de esa fecha: GitHub → Settings → Developer settings → Fine-grained tokens → Regenerate, y actualizar el secret `github_pat` en Supabase Vault (solo el bloque 1 de `supabase/cron.sql`). Si vence, los horarios dejan de dispararse y el monitor empieza a fallar y GitHub manda mails.
 
 | Workflow | Archivo | Quién lo dispara | Horario (ARG = UTC-3) |
 |----------|---------|------------------|-----------------------|
@@ -96,7 +96,7 @@ Sin `?on_conflict=ticker,date` en la URL, las inserciones dan 409 Conflict.
 | Monitor (respaldo) | `monitor.yml` | schedule de GitHub | ~11:15, 12:30, 18:30, 20:30 |
 | Keep-alive | `keepalive.yml` | schedule de GitHub | días 1 y 20 |
 
-El monitor revisa si el último horario tuvo su corrida; si no, la dispara y manda mail por EmailJS. Si llega ese mail seguido, revisar el cron de Supabase o si venció el PAT.
+El monitor revisa si el último horario tuvo su corrida; si no, la dispara y termina con error a propósito, así GitHub manda su mail de "workflow run failed" (EmailJS ya no se usa en el monitor). Si llega ese mail seguido, revisar el cron de Supabase o si venció el PAT.
 
 **⚠️ GitHub deshabilita workflows automáticamente si no hay commits en 60 días.**
 El último commit fue el 28 ago 2026. Para oct 2026 = 39 días (todavía OK).

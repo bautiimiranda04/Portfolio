@@ -1,8 +1,9 @@
-name: Monitor — Auto-retry y mail si no actualizó
+name: Monitor — Auto-retry si no actualizó
 
 # Respaldo del disparo de Supabase (pg_cron). Verifica que cada horario
 # (10:45 y 18:00 ARG = 13:45 y 21:00 UTC) haya tenido su actualización;
-# si no, la dispara y manda mail.
+# si no, la dispara y marca la corrida como fallida: GitHub manda el mail
+# de "workflow run failed" automáticamente (sin EmailJS).
 on:
   schedule:
     - cron: '15 14 * * *'
@@ -17,7 +18,6 @@ jobs:
   check-and-retry:
     runs-on: ubuntu-latest
     env:
-      EMAILJS_TOKEN: ${{ secrets.EMAILJS_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
 
@@ -28,7 +28,6 @@ jobs:
           import urllib.request, urllib.parse, json, os
           from datetime import datetime, timezone, timedelta
 
-          EMAILJS_TOKEN = os.environ['EMAILJS_TOKEN']
           GH_TOKEN = os.environ['GH_TOKEN']
           REPO = os.environ['REPO']
           SLOTS_UTC = [(13, 45), (21, 0)]  # 10:45 y 18:00 Argentina
@@ -78,30 +77,8 @@ jobs:
               except Exception as e:
                   print(f"  Error disparando {wf}: {e}")
 
-          arg = now - timedelta(hours=3)
-          payload = {
-              "service_id": "service_e293oyz",
-              "template_id": "template_zhubo5n",
-              "user_id": "2uDaUKYWCK5fCYx92",
-              "accessToken": EMAILJS_TOKEN,
-              "template_params": {
-                  "ticker": "MONITOR",
-                  "name": "Auto-Monitor Portfolio",
-                  "condition": f"no habia corrido {', '.join(missing)} en horario - se disparo automaticamente",
-                  "price": f"{arg:%Y-%m-%d}",
-                  "note": f"Reintento a las {arg:%H:%M} hora Argentina. Revisar el cron de Supabase.",
-                  "portfolio_url": "https://bautiimiranda04.github.io/Portfolio/"
-              }
-          }
-          req = urllib.request.Request(
-              "https://api.emailjs.com/api/v1.0/email/send",
-              data=json.dumps(payload).encode(), method='POST'
-          )
-          req.add_header('Content-Type', 'application/json')
-          req.add_header('origin', 'https://bautiimiranda04.github.io')
-          try:
-              with urllib.request.urlopen(req, timeout=15) as r:
-                  print(f"Mail enviado: {r.read().decode()}")
-          except Exception as e:
-              print(f"Error mail: {e}")
+          # Fallar a propósito para que GitHub mande el mail de aviso.
+          raise SystemExit(
+              f"AVISO: no había corrido {', '.join(missing)} en horario; se reintentó. "
+              "Si se repite, revisar el cron de Supabase o si venció el token github_pat (vence 4 ene 2027).")
           EOF
