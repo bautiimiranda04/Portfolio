@@ -10,13 +10,15 @@ create extension if not exists pg_net;
 
 -- 1) Guardar / reemplazar la llave en Vault
 do $$
-declare v_id uuid;
+declare
+  v_token text := 'PEGAR_LLAVE_ACA';
+  v_id uuid;
 begin
   select id into v_id from vault.secrets where name = 'github_pat';
   if v_id is null then
-    perform vault.create_secret('PEGAR_LLAVE_ACA', 'github_pat');
+    perform vault.create_secret(v_token, 'github_pat');
   else
-    perform vault.update_secret(v_id, 'PEGAR_LLAVE_ACA');
+    perform vault.update_secret(v_id, v_token);
   end if;
 end $$;
 
@@ -43,10 +45,10 @@ as $$
 $$;
 revoke execute on function private.trigger_github_workflow(text) from public, anon, authenticated;
 
--- 3) Horarios
-select cron.schedule('precios-10hs-arg',  '0 13 * * *',   $$select private.trigger_github_workflow('update-prices.yml')$$);
+-- 3) Horarios: precios 10:45 y 18:00 ARG todos los días; analyst 10:50 ARG lun-vie
+select cron.schedule('precios-10hs-arg',  '45 13 * * *',   $$select private.trigger_github_workflow('update-prices.yml')$$);
 select cron.schedule('precios-18hs-arg',  '0 21 * * *',   $$select private.trigger_github_workflow('update-prices.yml')$$);
-select cron.schedule('analyst-10hs-arg',  '5 13 * * 1-5', $$select private.trigger_github_workflow('analyze.yml')$$);
+select cron.schedule('analyst-10hs-arg',  '50 13 * * 1-5', $$select private.trigger_github_workflow('analyze.yml')$$);
 
 -- 4) Prueba inmediata: dispara una actualización ahora
 select private.trigger_github_workflow('update-prices.yml');

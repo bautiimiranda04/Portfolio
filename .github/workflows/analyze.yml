@@ -1,8 +1,8 @@
 name: Super Analyst — Daily AI Report
 
 on:
-  # Lo dispara Supabase (pg_cron) a las 10:05 hora Argentina, lunes a viernes.
-  # Respaldo: monitor.yml reintenta si a las 10:30 no corrió.
+  # Lo dispara Supabase (pg_cron) a las 10:50 hora Argentina, lunes a viernes.
+  # Respaldo: monitor.yml reintenta si a las 11:15 no corrió.
   workflow_dispatch:
 
 jobs:

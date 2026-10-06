@@ -1,9 +1,9 @@
 name: Actualizar precios
 
 on:
-  # Lo dispara Supabase (pg_cron) a las 10:00 y 18:00 hora Argentina.
+  # Lo dispara Supabase (pg_cron) a las 10:45 y 18:00 hora Argentina.
   # No usamos `schedule` de GitHub porque llega con horas de atraso.
-  # Respaldo: monitor.yml reintenta si a las :30 no corrió.
+  # Respaldo: monitor.yml reintenta si no corrió en horario.
   workflow_dispatch:
 
 concurrency:

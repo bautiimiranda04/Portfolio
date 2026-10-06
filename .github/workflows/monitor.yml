@@ -1,11 +1,12 @@
 name: Monitor — Auto-retry y mail si no actualizó
 
 # Respaldo del disparo de Supabase (pg_cron). Verifica que cada horario
-# (10:00 y 18:00 ARG = 13:00 y 21:00 UTC) haya tenido su actualización;
+# (10:45 y 18:00 ARG = 13:45 y 21:00 UTC) haya tenido su actualización;
 # si no, la dispara y manda mail.
 on:
   schedule:
-    - cron: '30 13,21 * * *'
+    - cron: '15 14 * * *'
+    - cron: '30 21 * * *'
     - cron: '30 15,23 * * *'
   workflow_dispatch:
 
@@ -30,11 +31,11 @@ jobs:
           EMAILJS_TOKEN = os.environ['EMAILJS_TOKEN']
           GH_TOKEN = os.environ['GH_TOKEN']
           REPO = os.environ['REPO']
-          SLOTS_UTC = [13, 21]  # 10:00 y 18:00 Argentina
+          SLOTS_UTC = [(13, 45), (21, 0)]  # 10:45 y 18:00 Argentina
 
           now = datetime.now(timezone.utc)
           today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-          slots = [today + timedelta(hours=h) for h in SLOTS_UTC]
+          slots = [today + timedelta(hours=h, minutes=m) for h, m in SLOTS_UTC]
           slots += [s - timedelta(days=1) for s in slots]
           slot = max(s for s in slots if s <= now)
           print(f"Ahora: {now:%Y-%m-%d %H:%M} UTC — último horario: {slot:%Y-%m-%d %H:%M} UTC")
@@ -61,7 +62,7 @@ jobs:
               missing.append('update-prices.yml')
 
           # Super Analyst: días hábiles, después del horario de la mañana
-          morning = today + timedelta(hours=SLOTS_UTC[0])
+          morning = today + timedelta(hours=SLOTS_UTC[0][0], minutes=SLOTS_UTC[0][1])
           arg_weekday = (now - timedelta(hours=3)).weekday()
           if arg_weekday < 5 and now >= morning and not ran_since('analyze.yml', morning):
               missing.append('analyze.yml')
