@@ -10,6 +10,8 @@
 ---
 
 ## Repositorio
+> ⚠️ **El repo es PÚBLICO.** Nunca commitear passwords, tokens ni keys (ni en este archivo).
+
 - **URL:** https://github.com/bautiimiranda04/Portfolio
 - **GitHub Pages:** https://bautiimiranda04.github.io/Portfolio/
 - **Rama principal:** `main`
@@ -21,7 +23,7 @@
 ### `index.html` — Dashboard del portfolio (CIFRADO)
 El archivo está cifrado con **StaticCrypt v3**. Para editarlo:
 
-1. **Descifrar con Node.js** (password: `Racing2014`, salt: `8b3de301ecaec787ec6852f67fd0f461`):
+1. **Descifrar con Node.js** (password: pedírsela al usuario — NUNCA escribirla en el repo, que es público; el salt está en `staticryptConfig` dentro de `index.html`):
 ```js
 const crypto = require('crypto');
 // 3 rondas PBKDF2:
@@ -36,7 +38,7 @@ const crypto = require('crypto');
 3. **Re-cifrar:**
 ```bash
 npm install staticrypt
-./node_modules/.bin/staticrypt archivo.html --password Racing2014 --short -o index.html
+./node_modules/.bin/staticrypt archivo.html --password "$STATICRYPT_PASSWORD" --short -o index.html
 ```
 4. Hacer commit y push — GitHub Pages actualiza automáticamente
 
@@ -93,29 +95,8 @@ Sin `?on_conflict=ticker,date` en la URL, las inserciones dan 409 Conflict.
 El último commit fue el 28 ago 2026. Para oct 2026 = 39 días (todavía OK).
 Si pasan 60 días sin commits, hay que ir a GitHub → Actions → cada workflow → "Enable workflow".
 
-### Keepalive pendiente
-Hay un workflow `keepalive.yml` **pendiente de agregar** que hace un commit cada 20 días para evitar la desactivación. No se pudo subir porque el PAT no tiene scope `workflow`.
-
-**Para agregarlo:** ir a github.com/bautiimiranda04/Portfolio → `.github/workflows/` → "Add file" → crear `keepalive.yml` con este contenido:
-```yaml
-name: Keep-alive
-on:
-  schedule:
-    - cron: '0 10 1,20 * *'  # Día 1 y 20 de cada mes
-  workflow_dispatch:
-jobs:
-  keepalive:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          echo "Last keepalive: $(date -u '+%Y-%m-%d %H:%M UTC')" > .github/keepalive.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .github/keepalive.txt
-          git commit -m "chore: keepalive $(date -u '+%Y-%m-%d')" || echo "Nothing to commit"
-          git push
-```
+### Keepalive
+`.github/workflows/keepalive.yml` hace un commit los días 1 y 20 de cada mes (escribe `.github/keepalive.txt`) para que GitHub no deshabilite los workflows.
 
 ---
 
@@ -149,7 +130,7 @@ Para evitarlo: agregar un ping a Supabase en `monitor.yml` o upgradear a plan pa
 | `RESEND_API_KEY` | Para envío de alertas por email (Resend.com) |
 | `ALERT_EMAILS` | Emails separados por coma para recibir alertas |
 | `GEMINI_API_KEY` | Para Super Analyst (Google AI) |
-| `EMAILJS_TOKEN` | `O2EV97MeFZpQgEIblUvDa` — para monitor.yml (EmailJS) |
+| `EMAILJS_TOKEN` | Token de EmailJS para monitor.yml |
 
 **GitHub PAT disponible:** guardado en el password manager del usuario (NO commitear en el repo)
 - Scope: solo `repo` (NO tiene `workflow` — por eso no se puede subir keepalive.yml vía API)
@@ -175,8 +156,6 @@ https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summa
 ---
 
 ## Problemas conocidos / Pendientes
-
-1. **`keepalive.yml` sin subir** — ver sección anterior. Necesita hacerse manualmente o con PAT con scope `workflow`.
 
 2. **Supabase puede volver a pausarse** — el monitor no hace ping a Supabase fuera de horario de mercado. Considerar agregar un ping diario en el workflow.
 
@@ -211,7 +190,7 @@ cd Portfolio
 npm install staticrypt
 node decrypt.js  # o script manual con crypto
 # ... editar el HTML ...
-./node_modules/.bin/staticrypt decrypted.html --password Racing2014 --short -o index.html
+./node_modules/.bin/staticrypt decrypted.html --password "$STATICRYPT_PASSWORD" --short -o index.html
 
 # 3. Commitear
 git add -A
@@ -248,7 +227,7 @@ GitHub Actions (3 workflows)
                 └── EmailJS → notifica si hubo problema
 
 GitHub Pages (index.html cifrado con StaticCrypt)
-    ├── Usuario ingresa password "Racing2014"
+    ├── Usuario ingresa la password
     ├── JS descifra el HTML en el navegador
     └── Dashboard cargado:
           ├── Supabase → posiciones + historial de precios

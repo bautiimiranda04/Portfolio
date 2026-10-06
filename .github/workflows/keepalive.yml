@@ -1,0 +1,19 @@
+name: Keep-alive
+on:
+  schedule:
+    - cron: '0 10 1,20 * *'  # Día 1 y 20 de cada mes
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "Last keepalive: $(date -u '+%Y-%m-%d %H:%M UTC')" > .github/keepalive.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/keepalive.txt
+          git commit -m "chore: keepalive $(date -u '+%Y-%m-%d')" || echo "Nothing to commit"
+          git push
