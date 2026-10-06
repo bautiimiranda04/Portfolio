@@ -137,7 +137,7 @@ Para evitarlo: agregar un ping a Supabase en `monitor.yml` o upgradear a plan pa
 | `RESEND_API_KEY` | Para envío de alertas por email (Resend.com) |
 | `ALERT_EMAILS` | Emails separados por coma para recibir alertas |
 | `GEMINI_API_KEY` | Para Super Analyst (Google AI) |
-| `EMAILJS_TOKEN` | Token de EmailJS para monitor.yml |
+| `EMAILJS_TOKEN` | Ya no se usa (claves de EmailJS rotadas el 6 oct 2026; el monitor avisa vía mail de GitHub) |
 
 **GitHub PAT disponible:** guardado en el password manager del usuario (NO commitear en el repo)
 - Scope: solo `repo` (NO tiene `workflow` — por eso no se puede subir keepalive.yml vía API)
@@ -229,7 +229,7 @@ GitHub Actions (3 workflows)
           └── Python inline en el YAML
                 ├── Supabase price_history → verifica si hay datos de hoy
                 ├── Si no hay datos → re-dispara update-prices.yml + analyze.yml
-                └── EmailJS → notifica si hubo problema
+                └── Si reintentó → termina con error → GitHub manda mail
 
 GitHub Pages (index.html cifrado con StaticCrypt)
     ├── Usuario ingresa la password
