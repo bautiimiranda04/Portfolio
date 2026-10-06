@@ -1,10 +1,9 @@
 name: Super Analyst — Daily AI Report
 
 on:
-  schedule:
-    # 9:30 AM Argentina time (UTC-3) = 12:30 UTC, weekdays
-    - cron: '30 12 * * 1-5'
-  workflow_dispatch:  # allow manual trigger
+  # Lo dispara Supabase (pg_cron) a las 10:05 hora Argentina, lunes a viernes.
+  # Respaldo: monitor.yml reintenta si a las 10:30 no corrió.
+  workflow_dispatch:
 
 jobs:
   analyze:

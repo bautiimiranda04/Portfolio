@@ -1,13 +1,14 @@
 name: Actualizar precios
 
 on:
-  schedule:
-    # 9:00 AM Argentina time (UTC-3) = 12:00 UTC — todos los días
-    - cron: '0 12 * * *'
-    # 6:00 PM Argentina time (UTC-3) = 21:00 UTC — todos los días
-    - cron: '0 21 * * *'
-  # Allow manual trigger from GitHub website
+  # Lo dispara Supabase (pg_cron) a las 10:00 y 18:00 hora Argentina.
+  # No usamos `schedule` de GitHub porque llega con horas de atraso.
+  # Respaldo: monitor.yml reintenta si a las :30 no corrió.
   workflow_dispatch:
+
+concurrency:
+  group: update-prices
+  cancel-in-progress: false
 
 jobs:
   update-prices:

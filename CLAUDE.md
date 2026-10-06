@@ -85,11 +85,16 @@ Sin `?on_conflict=ticker,date` en la URL, las inserciones dan 409 Conflict.
 
 ## GitHub Actions Workflows
 
-| Workflow | Archivo | Horario | ID |
-|----------|---------|---------|-----|
-| Actualizar precios | `update-prices.yml` | 12:00 y 21:00 UTC, todos los días | 255236953 |
-| Super Analyst | `analyze.yml` | 12:30 UTC, lunes-viernes | 256631126 |
-| Monitor | `monitor.yml` | Cada hora 12-22 UTC, lunes-viernes | 264155795 |
+**Los horarios los dispara Supabase (pg_cron + pg_net), NO el `schedule` de GitHub**, porque el cron de GitHub llegaba con 3-5 horas de atraso. Supabase llama a la API `workflow_dispatch` de GitHub con un fine-grained PAT (solo este repo, permiso Actions: write) guardado en Supabase Vault como `github_pat`. Ver `supabase/cron.sql`.
+
+| Workflow | Archivo | Quién lo dispara | Horario (ARG = UTC-3) |
+|----------|---------|------------------|-----------------------|
+| Actualizar precios | `update-prices.yml` | Supabase pg_cron | 10:00 y 18:00 todos los días |
+| Super Analyst | `analyze.yml` | Supabase pg_cron | 10:05 lunes a viernes |
+| Monitor (respaldo) | `monitor.yml` | schedule de GitHub | ~10:30, 12:30, 18:30, 20:30 |
+| Keep-alive | `keepalive.yml` | schedule de GitHub | días 1 y 20 |
+
+El monitor revisa si el último horario tuvo su corrida; si no, la dispara y manda mail por EmailJS. Si llega ese mail seguido, revisar el cron de Supabase o si venció el PAT.
 
 **⚠️ GitHub deshabilita workflows automáticamente si no hay commits en 60 días.**
 El último commit fue el 28 ago 2026. Para oct 2026 = 39 días (todavía OK).
@@ -160,8 +165,6 @@ https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summa
 2. **Supabase puede volver a pausarse** — el monitor no hace ping a Supabase fuera de horario de mercado. Considerar agregar un ping diario en el workflow.
 
 3. **Yahoo quoteSummary 401** — Los P/E ratios y market caps del watchlist dan N/A. Necesita otra fuente de datos o autenticación.
-
-4. **Monitor puede correr antes que precios** — Monitor corre a las 12:00 UTC igual que `Actualizar precios`. A veces el monitor detecta "sin datos" y re-dispara el workflow innecesariamente. Considerar retrasar el monitor a las 12:30.
 
 5. **PCLA precio** — Históricamente tuvo precio desactualizado (2.35 en lugar de 2.20). Debería estar bien ahora con el workflow corriendo correctamente.
 

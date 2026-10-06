@@ -1,75 +1,83 @@
 name: Monitor — Auto-retry y mail si no actualizó
 
+# Respaldo del disparo de Supabase (pg_cron). Verifica que cada horario
+# (10:00 y 18:00 ARG = 13:00 y 21:00 UTC) haya tenido su actualización;
+# si no, la dispara y manda mail.
 on:
   schedule:
-    - cron: '0 12,13,14,15,16,17,18,19,20,21,22 * * 1-5'
+    - cron: '30 13,21 * * *'
+    - cron: '30 15,23 * * *'
   workflow_dispatch:
+
+permissions:
+  actions: write
 
 jobs:
   check-and-retry:
     runs-on: ubuntu-latest
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       EMAILJS_TOKEN: ${{ secrets.EMAILJS_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
 
     steps:
-      - name: Verificar y reintentar si no actualizó hoy
+      - name: Verificar último horario y reintentar si falta
         run: |
           python3 << 'EOF'
-          import urllib.request, json, subprocess, os, time
-          from datetime import datetime
+          import urllib.request, urllib.parse, json, os
+          from datetime import datetime, timezone, timedelta
 
-          SUPABASE_URL = os.environ['SUPABASE_URL']
-          SUPABASE_KEY = os.environ["SUPABASE_KEY"]
           EMAILJS_TOKEN = os.environ['EMAILJS_TOKEN']
           GH_TOKEN = os.environ['GH_TOKEN']
           REPO = os.environ['REPO']
+          SLOTS_UTC = [13, 21]  # 10:00 y 18:00 Argentina
 
-          # Fecha de hoy en Argentina (UTC-3)
-          from datetime import timezone, timedelta
-          tz_arg = timezone(timedelta(hours=-3))
-          today = datetime.now(tz_arg).strftime('%Y-%m-%d')
-          print(f"Verificando datos para: {today}")
+          now = datetime.now(timezone.utc)
+          today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+          slots = [today + timedelta(hours=h) for h in SLOTS_UTC]
+          slots += [s - timedelta(days=1) for s in slots]
+          slot = max(s for s in slots if s <= now)
+          print(f"Ahora: {now:%Y-%m-%d %H:%M} UTC — último horario: {slot:%Y-%m-%d %H:%M} UTC")
 
-          # Contar filas en Supabase
-          req = urllib.request.Request(
-              f"{SUPABASE_URL}/rest/v1/price_history?date=eq.{today}&select=id"
-          )
-          req.add_header('apikey', SUPABASE_KEY)
-          req.add_header('Authorization', f'Bearer {SUPABASE_KEY}')
-          with urllib.request.urlopen(req) as r:
-              count = len(json.loads(r.read()))
-          print(f"Filas encontradas: {count}")
-
-          if count > 0:
-              print("OK — datos ya actualizados. Nada que hacer.")
-              exit(0)
-
-          print("SIN DATOS — disparando workflows y enviando mail...")
-
-          # Disparar update-prices
-          def trigger(workflow):
+          def gh(method, path, body=None):
               req = urllib.request.Request(
-                  f"https://api.github.com/repos/{REPO}/actions/workflows/{workflow}/dispatches",
-                  data=json.dumps({"ref": "main"}).encode(), method='POST'
-              )
-              req.add_header('Authorization', f'token {GH_TOKEN}')
-              req.add_header('Content-Type', 'application/json')
+                  f"https://api.github.com/repos/{REPO}{path}",
+                  data=json.dumps(body).encode() if body else None, method=method)
+              req.add_header('Authorization', f'Bearer {GH_TOKEN}')
+              req.add_header('Accept', 'application/vnd.github+json')
+              with urllib.request.urlopen(req) as r:
+                  return json.loads(r.read() or b'{}')
+
+          def ran_since(workflow, since):
+              created = urllib.parse.quote(f">={since:%Y-%m-%dT%H:%M:%SZ}")
+              runs = gh('GET', f"/actions/workflows/{workflow}/runs"
+                        f"?created={created}&per_page=20")['workflow_runs']
+              ok = [r for r in runs if r['status'] != 'completed' or r['conclusion'] == 'success']
+              print(f"  {workflow}: {len(runs)} corridas desde {since:%H:%M} UTC, {len(ok)} OK/en curso")
+              return bool(ok)
+
+          missing = []
+          if not ran_since('update-prices.yml', slot):
+              missing.append('update-prices.yml')
+
+          # Super Analyst: días hábiles, después del horario de la mañana
+          morning = today + timedelta(hours=SLOTS_UTC[0])
+          arg_weekday = (now - timedelta(hours=3)).weekday()
+          if arg_weekday < 5 and now >= morning and not ran_since('analyze.yml', morning):
+              missing.append('analyze.yml')
+
+          if not missing:
+              print("OK — todo actualizado. Nada que hacer.")
+              raise SystemExit(0)
+
+          for wf in missing:
               try:
-                  with urllib.request.urlopen(req) as r:
-                      print(f"  {workflow} disparado (HTTP {r.status})")
+                  gh('POST', f"/actions/workflows/{wf}/dispatches", {"ref": "main"})
+                  print(f"  {wf} disparado")
               except Exception as e:
-                  print(f"  Error disparando {workflow}: {e}")
+                  print(f"  Error disparando {wf}: {e}")
 
-          trigger('update-prices.yml')
-          time.sleep(60)
-          trigger('analyze.yml')
-
-          # Enviar mail via EmailJS
-          now_utc = datetime.utcnow().strftime('%H:%M UTC')
+          arg = now - timedelta(hours=3)
           payload = {
               "service_id": "service_e293oyz",
               "template_id": "template_zhubo5n",
@@ -78,9 +86,9 @@ jobs:
               "template_params": {
                   "ticker": "MONITOR",
                   "name": "Auto-Monitor Portfolio",
-                  "condition": f"no habia actualizado el {today} - se disparo automaticamente",
-                  "price": today,
-                  "note": f"Reintento a las {now_utc}",
+                  "condition": f"no habia corrido {', '.join(missing)} en horario - se disparo automaticamente",
+                  "price": f"{arg:%Y-%m-%d}",
+                  "note": f"Reintento a las {arg:%H:%M} hora Argentina. Revisar el cron de Supabase.",
                   "portfolio_url": "https://bautiimiranda04.github.io/Portfolio/"
               }
           }
